@@ -55,6 +55,17 @@ def run(cmd: list[str], input_text: str | None = None) -> subprocess.CompletedPr
     return subprocess.run(cmd, input=input_text, capture_output=True, text=True)
 
 
+def wl_copy_safe(text: str):
+    """Set Wayland clipboard without letting background wl-copy daemon inherit stdout/stderr pipes."""
+    subprocess.run(
+        ["wl-copy", "--", text],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        check=False,
+    )
+
+
 @contextmanager
 def pointer_lock():
     """Serialize physical ydotool mouse/keyboard calls across parallel AI agents."""
@@ -473,7 +484,7 @@ def cmd_type(args):
             run(["ydotool", "type", "--key-delay", "8", text])
             method = "ydotool"
         else:
-            subprocess.run(["wl-copy", "--", text], check=True)
+            wl_copy_safe(text)
             time.sleep(0.08)
             press_combo("ctrl+v")
             method = "clipboard_paste"
@@ -548,7 +559,14 @@ def cmd_yt_play(args):
     w, h, _ = get_monitor_info()
     notify_hud(w // 2, h // 2, "launch", f"YouTube: {query[:20]}", False, args.agent)
     subprocess.Popen(["firefox", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    time.sleep(1.4)
+    # Wait cleanly until Firefox shows YouTube search tab before locking search_title
+    t_wait = time.time() + 2.8
+    while time.time() < t_wait:
+        cur = _firefox_title().lower()
+        if "youtube" in cur:
+            break
+        time.sleep(0.25)
+    time.sleep(0.5)
 
     words = query.split()
     candidates = []
@@ -641,7 +659,8 @@ def detect_office_app() -> tuple[str | None, list[str] | None, bool]:
 
 
 def _build_docx_file(out_path: Path, title: str, body_text: str) -> int:
-    """Create a valid Word .docx archive using pure Python stdlib zipfile + XML."""
+    """Create a cleanly styled Word .docx document (typography, accent headings, bullets, spacing) with pure stdlib."""
+    import re
     import zipfile
     from xml.sax.saxutils import escape
 
@@ -649,32 +668,80 @@ def _build_docx_file(out_path: Path, title: str, body_text: str) -> int:
     paras = []
     if title:
         paras.append(
-            f'<w:p><w:pPr><w:spacing w:after="160"/></w:pPr>'
-            f'<w:r><w:rPr><w:b/><w:sz w:val="32"/></w:rPr>'
+            '<w:p><w:pPr><w:spacing w:before="0" w:after="120"/>'
+            '<w:pBdr><w:bottom w:val="single" w:sz="12" w:space="6" w:color="1D4ED8"/></w:pBdr></w:pPr>'
+            '<w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:b/><w:color w:val="1E3A8A"/><w:sz w:val="38"/></w:rPr>'
             f'<w:t xml:space="preserve">{escape(title)}</w:t></w:r></w:p>'
         )
+
+    def render_inline_runs(text_line: str, base_sz: int = 22, base_col: str = "1F2937") -> str:
+        # Support simple **bold** inline spans cleanly
+        tokens = re.split(r"(\*\*[^*]+\*\*)", text_line)
+        runs = []
+        for tok in tokens:
+            if not tok:
+                continue
+            is_b = tok.startswith("**") and tok.endswith("**") and len(tok) > 4
+            val = tok[2:-2] if is_b else tok
+            b_xml = "<w:b/>" if is_b else ""
+            runs.append(
+                f'<w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>{b_xml}'
+                f'<w:color w:val="{base_col}"/><w:sz w:val="{base_sz}"/></w:rPr>'
+                f'<w:t xml:space="preserve">{escape(val)}</w:t></w:r>'
+            )
+        return "".join(runs)
+
     for line in (body_text or "").splitlines():
-        s = line.rstrip()
+        s = line.strip()
         if not s:
-            paras.append("<w:p/>")
+            paras.append('<w:p><w:pPr><w:spacing w:after="60"/></w:pPr></w:p>')
             continue
-        is_heading = s.startswith("# ") or s.startswith("## ")
-        clean = s.lstrip("# ").strip() if is_heading else s
-        if is_heading:
+        if s.startswith("### "):
+            clean = s[4:].strip()
             paras.append(
-                f'<w:p><w:pPr><w:spacing w:before="140" w:after="80"/></w:pPr>'
-                f'<w:r><w:rPr><w:b/><w:sz w:val="26"/></w:rPr>'
-                f'<w:t xml:space="preserve">{escape(clean)}</w:t></w:r></w:p>'
+                '<w:p><w:pPr><w:spacing w:before="140" w:after="60"/></w:pPr>'
+                + render_inline_runs(f"**{clean}**", base_sz=24, base_col="0F172A")
+                + "</w:p>"
+            )
+        elif s.startswith("## "):
+            clean = s[3:].strip()
+            paras.append(
+                '<w:p><w:pPr><w:spacing w:before="200" w:after="80"/></w:pPr>'
+                + render_inline_runs(f"**{clean}**", base_sz=28, base_col="1E40AF")
+                + "</w:p>"
+            )
+        elif s.startswith("# "):
+            clean = s[2:].strip()
+            if title and clean.lower() == title.strip().lower():
+                continue
+            paras.append(
+                '<w:p><w:pPr><w:spacing w:before="220" w:after="100"/></w:pPr>'
+                + render_inline_runs(f"**{clean}**", base_sz=32, base_col="1E3A8A")
+                + "</w:p>"
+            )
+        elif re.match(r"^(?:[-*•]|\d+[.)])\s+", s):
+            bullet_body = re.sub(r"^(?:[-*•]|\d+[.)])\s+", "", s)
+            paras.append(
+                '<w:p><w:pPr><w:spacing w:after="80" w:line="276" w:lineRule="auto"/>'
+                '<w:ind w:left="360" w:hanging="180"/></w:pPr>'
+                '<w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:b/><w:color w:val="2563EB"/><w:sz w:val="22"/></w:rPr>'
+                '<w:t xml:space="preserve">• </w:t></w:r>'
+                + render_inline_runs(bullet_body, base_sz=22, base_col="1F2937")
+                + "</w:p>"
             )
         else:
             paras.append(
-                f'<w:p><w:r><w:t xml:space="preserve">{escape(clean)}</w:t></w:r></w:p>'
+                '<w:p><w:pPr><w:spacing w:after="110" w:line="276" w:lineRule="auto"/></w:pPr>'
+                + render_inline_runs(s, base_sz=22, base_col="1F2937")
+                + "</w:p>"
             )
 
     doc_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        f'<w:body>{"".join(paras)}<w:sectPr/></w:body></w:document>'
+        f'<w:body>{"".join(paras)}'
+        '<w:sectPr><w:pgMar w:top="1140" w:right="1140" w:bottom="1140" w:left="1140"/></w:sectPr>'
+        '</w:body></w:document>'
     )
     ct_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -745,11 +812,16 @@ def cmd_web_copy(args):
             if chk:
                 print(json.dumps({"ok": False, "blocked": "captcha", "error": "Anti-bot / CAPTCHA verification detected"}))
                 sys.exit(2)
+            ui_junk = ("generate answer", "duckassist", "news for", "images for", "videos for", "people also", "more results", "search instead", "feedback")
             for cand in candidates:
                 raw_hits = _ocr_scan_once(cand, "firefox", "auto", min_y=230)
-                # Prefer longer article headline lines over short single-word nav buttons
-                good = [item for item in raw_hits if len(item["text"].strip()) >= 18]
-                hits = good or raw_hits
+                non_ui = [
+                    item for item in raw_hits
+                    if len(item["text"].strip()) >= 18 and not any(j in item["text"].lower() for j in ui_junk)
+                ]
+                # Prefer article result headlines lower down (below instant answer box) when available
+                below_ia = [item for item in non_ui if item["y"] >= 310]
+                hits = below_ia or non_ui or raw_hits
                 if hits:
                     break
             if not hits:
@@ -765,21 +837,33 @@ def cmd_web_copy(args):
         notify_hud(ax, ay, "click", "Click bài viết", True, args.agent)
         run(["ydotool", "click", BUTTON_CODES["left"]])
 
-    # Wait cleanly for article page load then scroll visibly like a human reading
-    time.sleep(2.4)
+    # Wait cleanly for article page load; if still on search page, try fallback hit[1] cleanly
+    time.sleep(2.2)
+    if _firefox_title() == search_title and len(hits) > 1:
+        with pointer_lock():
+            hypr_focus("firefox")
+            time.sleep(0.1)
+            target = hits[1]
+            clicked_title = target["text"]
+            ax, ay = calibrated_move(target["x"], target["y"], "Mở bài viết #2", args.agent)
+            notify_hud(ax, ay, "click", "Click bài viết", True, args.agent)
+            run(["ydotool", "click", BUTTON_CODES["left"]])
+        time.sleep(2.2)
     with pointer_lock():
         hypr_focus("firefox")
         time.sleep(0.15)
         fc = find_client("firefox")
         cx = int(fc["at"][0] + fc["size"][0] / 2) if fc else w // 2
         cy = int(fc["at"][1] + fc["size"][1] / 2) if fc else h // 2
-        calibrated_move(cx, cy, "Đọc & cuộn trang", args.agent)
+        calibrated_move(cx, cy, "Chuyển chế độ đọc sạch", args.agent)
+        # Try Firefox Reader View (Ctrl+Alt+R); harmless no-op on pages that don't support it
+        press_combo("ctrl+alt+r")
+        time.sleep(0.8)
         for _ in range(max(1, args.scrolls)):
             notify_hud(cx, cy, "scroll", "Cuộn trang đọc bài", False, args.agent)
             run(["ydotool", "mousemove", "-w", "-x", "0", "-y", "-5"])
-            time.sleep(0.45)
+            time.sleep(0.4)
 
-        # Toggle Reader View? No, standard Ctrl+A -> Ctrl+C works universally on any page visibly!
         notify_hud(cx, cy, "click", "Chọn nội dung (Ctrl+A)", True, args.agent)
         run(["ydotool", "click", BUTTON_CODES["left"]])
         time.sleep(0.08)
@@ -790,10 +874,35 @@ def cmd_web_copy(args):
         time.sleep(0.25)
 
     clip = run(["wl-paste", "--no-newline"]).stdout
-    lines = [ln.strip() for ln in clip.splitlines() if len(ln.strip()) >= 3]
-    clean_clip = "\n".join(lines[:220])
+    noise_pats = (
+        "skip to content", "skip to main", "cookie", "accept all", "privacy policy",
+        "terms of service", "sign in", "log in", "subscribe", "global navigation",
+        "choose your location", "close location", "read more", "share this", "alt=\"\"",
+        "advertisement", "all rights reserved",
+    )
+    lines = []
+    seen = set()
+    for ln in clip.splitlines():
+        st = ln.strip()
+        low_l = st.lower()
+        if len(st) < 25 and not st.endswith(":"):
+            # Drop short UI/nav button crumbs while keeping real short headings ending cleanly
+            continue
+        if any(np in low_l for np in noise_pats):
+            continue
+        if st in seen:
+            continue
+        seen.add(st)
+        lines.append(st)
+    clean_clip = "\n".join(lines[:140])
+    if not clean_clip.strip():
+        clean_clip = "\n".join(ln.strip() for ln in clip.splitlines() if len(ln.strip()) >= 8)[:6000]
     if clean_clip:
-        subprocess.run(["wl-copy", "--", clean_clip], check=False)
+        wl_copy_safe(clean_clip)
+        Path("/tmp/ai_web_copied.txt").write_text(
+            f"PAGE_TITLE: {_firefox_title()}\nMATCHED_LINK: {clicked_title}\n\n{clean_clip}",
+            encoding="utf-8",
+        )
 
     if len(clean_clip.strip()) < 80:
         print(json.dumps({"ok": False, "error": "Clipboard text too short after copy", "chars": len(clean_clip)}))
@@ -805,6 +914,7 @@ def cmd_web_copy(args):
         "page_title": _firefox_title(),
         "changed_page": _firefox_title() != search_title,
         "chars": len(clean_clip),
+        "raw_file": "/tmp/ai_web_copied.txt",
         "preview": clean_clip[:220],
     }, ensure_ascii=False))
 
@@ -814,6 +924,7 @@ def cmd_office_paste(args):
     clip = run(["wl-paste", "--no-newline"]).stdout
     if args.source_file:
         clip = Path(args.source_file).expanduser().read_text(encoding="utf-8")
+        wl_copy_safe(clip)
     if not clip.strip():
         print(json.dumps({"ok": False, "error": "Clipboard is empty; nothing to paste"}))
         sys.exit(1)
@@ -859,7 +970,7 @@ def cmd_office_paste(args):
             run(["ydotool", "click", BUTTON_CODES["left"]])
             time.sleep(0.12)
             if not (is_wp and saved_docx):
-                subprocess.run(["wl-copy", "--", clip], check=False)
+                wl_copy_safe(clip)
                 time.sleep(0.08)
                 notify_hud(ax, ay, "key", "Dán nội dung (Ctrl+V)", False, args.agent)
                 press_combo("ctrl+v")

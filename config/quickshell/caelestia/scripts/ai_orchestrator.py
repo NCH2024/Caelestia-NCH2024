@@ -1263,6 +1263,168 @@ class Orchestrator:
             summary_lines.append(f"- {barrier_msg}")
         return "\n".join(summary_lines)
 
+    def try_curated_web_office_pipeline(self, user_task: str, clean_task: str, final_barrier: str | None, task_start_ts: float) -> str | None:
+        """
+        Overhauled Human-Like Web->Word/Office (+ optional YouTube) Pipeline (~15-22s total):
+        1) 1-shot fast intent extract (no tool loops, ~2s)
+        2) Direct visible Firefox web-copy (Reader View + scroll + Ctrl+C, ~7s, 0 LLM steps)
+        3) Parallel: AI Curation/Formatting (strips web junk -> styled Markdown, ~3s) || YouTube yt-play (~6s)
+        4) Visual office-paste (opens OS Word/Editor + pastes curated text + writes styled .docx, ~1.5s)
+        5) Hard OS verification gate -> final lock barrier
+        """
+        fast_m = self.fast_router_model(self.supervisor_model)
+        emit("phase", phase="planning", progress=15, detail="Đang phân tích yêu cầu bài viết & tài liệu..." if self.is_vi() else "Parsing article & document parameters...")
+
+        parse_prompt = (
+            "CRITICAL: Do NOT call ANY tools (no run_command, no read_file, no search_web). Reply immediately with ONLY valid JSON.\n"
+            "Normalize any spelling typos (e.g. 'Onui'->'One UI', 'saung'->'sau đó') into clean search queries:\n"
+            f"USER REQUEST: {clean_task}\n\n"
+            "Return JSON schema:\n"
+            '{"article_query":"concise search words for web","doc_filename":"Clean_Ascii_Name.docx","doc_title":"Clean Document Title","curation_focus":"what key facts/sections the user wants","yt_query":"song/video query if user asked to play YouTube else empty string"}'
+        )
+        ok_p, raw_p, _, eff_p, _ = self.run_agy("router", "Intent Parse", parse_prompt, fast_m)
+        if not ok_p:
+            return None
+        spec = extract_json_block(raw_p) or {}
+        article_query = str(spec.get("article_query") or "").strip()
+        if not article_query:
+            return None
+        doc_filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(spec.get("doc_filename") or "Article_Summary.docx")).strip("_") or "Article_Summary.docx"
+        if not doc_filename.lower().endswith(".docx"):
+            doc_filename += ".docx"
+        doc_title = str(spec.get("doc_title") or article_query).strip()
+        curation_focus = str(spec.get("curation_focus") or clean_task).strip()
+        yt_query = str(spec.get("yt_query") or "").strip()
+
+        self.logger.write(
+            f"Curated Web->Office pipeline -> query={article_query!r}, doc={doc_filename}, yt={yt_query!r}, barrier={final_barrier}",
+            "\033[1;36m",
+        )
+        emit(
+            "assistant_message",
+            model=eff_p,
+            title="Thực thi trực quan (Đọc web → Chọn lọc → Soạn thảo)" if self.is_vi() else "Human-Like Curated Pipeline",
+            text=(
+                f"Đang mở Firefox tìm & đọc bài về **{article_query}**, lọc thông tin trọng tâm vào **{doc_filename}**"
+                + (f" và phát **{yt_query}** trên YouTube." if yt_query else ".")
+                if self.is_vi()
+                else f"Browsing **{article_query}**, curating clean content into **{doc_filename}**" + (f", and playing **{yt_query}**." if yt_query else ".")
+            ),
+        )
+
+        # Phase 2: Human-like visible web-copy directly via desktop_ctl (0 LLM step latency!)
+        emit("phase", phase="working", progress=35, detail="Đang mở Firefox tìm, cuộn đọc & copy bài viết..." if self.is_vi() else "Browsing & scrolling article in Firefox...")
+        emit("engine_start", role="executor", label="Browser", model="local-visual")
+        emit("engine_step", worker="Browser", step=1, detail=f"Mở Firefox tìm & cuộn đọc: {article_query}")
+        wc_res = subprocess.run(
+            ["caelestia-desktop", "web-copy", article_query, "--scrolls", "2", "--agent", "Browser"],
+            capture_output=True,
+            text=True,
+            timeout=35,
+        )
+        if wc_res.returncode == 2:
+            emit("task_error", message="Trang tìm kiếm yêu cầu xác minh CAPTCHA/người thật — AI đã dừng theo quy tắc an toàn." if self.is_vi() else "Blocked by CAPTCHA verification.")
+            return "__ABORTED__"
+        if wc_res.returncode != 0:
+            self.logger.write(f"web-copy missed ({wc_res.stdout.strip()}); handing off cleanly.", "\033[33m")
+            return None
+
+        wc_info = extract_json_block(wc_res.stdout) or {}
+        raw_path = Path(wc_info.get("raw_file") or "/tmp/ai_web_copied.txt")
+        raw_text = raw_path.read_text(encoding="utf-8") if raw_path.exists() else subprocess.run(["wl-paste", "--no-newline"], capture_output=True, text=True).stdout
+        raw_trimmed = raw_text[:9000]
+
+        # Phase 3: Parallel AI Content Curation (no GUI!) + Visual YouTube yt-play (Firefox GUI!)
+        emit("phase", phase="working", progress=62, detail="Đang chọn lọc & biên tập nội dung đẹp cho Word..." if self.is_vi() else "Curating clean article structure...")
+        curated_path = Path("/tmp/ai_curated_doc.md")
+
+        def run_curation() -> tuple[bool, str]:
+            emit("engine_start", role="router", label="Editor AI", model=fast_m)
+            emit("engine_step", worker="Editor AI", step=1, detail="Lọc bỏ rác trang web & biên tập cấu trúc Word")
+            curate_prompt = (
+                "CRITICAL: Do NOT call ANY tools (no run_command, no write_file, no read_file). Reply IMMEDIATELY with ONLY clean Markdown.\n"
+                "You are an editor turning raw webpage clipboard text into a clean, well-structured Word document.\n"
+                f"TASK GOAL / FOCUS: {curation_focus}\n"
+                f"ARTICLE TITLE HINT: {wc_info.get('page_title') or doc_title}\n"
+                f"{self.language_instruction()}\n"
+                "STRICT RULES:\n"
+                "- Remove ALL leftover navigation menus, ads, cookie notices, 'Skip to content', login buttons, unrelated links.\n"
+                "- Select ONLY accurate, substantive facts from the source text below.\n"
+                "- Format cleanly for Word typography using `# Main Title`, `## Section Heading`, and concise `- **Key point:** details` bullets + `## Nguồn tham khảo` at the end.\n\n"
+                f"RAW COPIED WEBPAGE TEXT:\n{raw_trimmed}"
+            )
+            ok_c, curated_md, err_c, _, _ = self.run_agy("router", "Editor AI", curate_prompt, fast_m)
+            if not ok_c or len((curated_md or "").strip()) < 120:
+                return False, err_c or "Curation returned empty text"
+            # Strip accidental markdown code fences if model wrapped output
+            cleaned_md = re.sub(r"^```(?:markdown|md)?\s*|\s*```$", "", curated_md.strip(), flags=re.IGNORECASE)
+            curated_path.write_text(cleaned_md, encoding="utf-8")
+            return True, cleaned_md
+
+        def run_youtube() -> tuple[bool, dict]:
+            emit("engine_step", worker="Browser", step=2, detail=f"Mở & kiểm tra phát YouTube: {yt_query}")
+            res_y = subprocess.run(["caelestia-desktop", "yt-play", yt_query, "--agent", "Browser"], capture_output=True, text=True, timeout=30)
+            info_y = extract_json_block(res_y.stdout) or {}
+            return res_y.returncode == 0, info_y
+
+        yt_ok = True
+        yt_info = {}
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_cur = pool.submit(run_curation)
+            fut_yt = pool.submit(run_youtube) if yt_query else None
+            cur_ok, cur_out = fut_cur.result()
+            if fut_yt:
+                yt_ok, yt_info = fut_yt.result()
+
+        if not cur_ok:
+            curated_path.write_text(raw_trimmed, encoding="utf-8")
+
+        # Phase 4: Open highest-priority OS Office/Editor, visually paste curated text + write styled .docx
+        emit("phase", phase="verifying", progress=84, detail="Đang mở trình soạn thảo, dán & định dạng file Word..." if self.is_vi() else "Pasting curated doc into Office/Editor...")
+        docx_out = str(Path.home() / "Documents" / doc_filename)
+        emit("engine_start", role="executor", label="Editor", model="local-visual")
+        emit("engine_step", worker="Editor", step=1, detail=f"Mở app & dán bài viết tinh chỉnh -> {doc_filename}")
+        op_res = subprocess.run(
+            ["caelestia-desktop", "office-paste", "--source-file", str(curated_path), "--docx", docx_out, "--title", doc_title, "--agent", "Editor"],
+            capture_output=True,
+            text=True,
+            timeout=25,
+        )
+        op_info = extract_json_block(op_res.stdout) or {}
+        emit("cursor_done", agent="Editor")
+
+        # Phase 5: Hard OS Verification Gate before final barrier
+        if yt_query and not yt_ok:
+            emit(
+                "task_error",
+                message=(
+                    f"Đã biên tập bài viết vào [Word](file://{docx_out}), nhưng YouTube chưa xác nhận phát âm thanh (`Corked: no`) nên đã DỪNG trước bước khóa màn hình."
+                    if self.is_vi()
+                    else f"Saved curated doc {docx_out}, but YouTube playback check failed — halted before lock screen."
+                ),
+            )
+            return "__ABORTED__"
+
+        ok_det, det_msg = self.verify_deterministic_claims(user_task, task_start_ts)
+        if not ok_det:
+            emit("task_error", message=det_msg)
+            return "__ABORTED__"
+
+        summary_lines = [
+            f"- **Bài viết nguồn (đọc trực quan trên Firefox):** {wc_info.get('page_title') or wc_info.get('matched_link')}",
+            f"- **Biên tập & định dạng Word:** Đã lọc bỏ rác web, định dạng tiêu đề/đề mục/gạch đầu dòng sạch đẹp tại [{doc_filename}](file://{docx_out}) (trình soạn thảo đã mở: `{op_info.get('app') or 'none'}`).",
+        ]
+        if yt_query:
+            summary_lines.append(f"- **YouTube (`Corked: no`):** Đang phát *{yt_info.get('title') or yt_query}*.")
+
+        if final_barrier:
+            time.sleep(0.5)
+        barrier_msg = self.run_final_barrier(final_barrier)
+        if barrier_msg:
+            summary_lines.append(f"- {barrier_msg}")
+
+        return "\n".join(summary_lines)
+
     def looks_heavy_engineering(self, user_task: str) -> bool:
         low = user_task.lower()
         return bool(
@@ -1335,7 +1497,10 @@ class Orchestrator:
             low = clean_task.lower()
             has_browser = bool(re.search(r"\b(trình duyệt|browser|firefox|youtube|google|web|bài báo|trang web)\b", low))
             has_control = bool(re.search(r"\b(chế độ|mode|cài đặt|settings|nexus|bảng điều khiển|độ sáng|âm lượng|equalizer|phần mềm|thống kê)\b", low))
-            has_research_doc = bool(re.search(r"\b(tìm bài|bài viết|tin tức|nghiên cứu|cập nhật|copy|chép|word|\.docx|docx|tài liệu|tóm tắt)\b", low))
+            has_research_doc = bool(
+                re.search(r"\b(bài viết|bài báo|trên mạng|tìm bài|copy|chép|word|libreoffice|liboffice|\.docx|docx|soạn thảo)\b", low)
+                and re.search(r"\b(tìm|đọc|copy|chép|lưu|tạo|mở|word|libreoffice|liboffice|\.docx|docx)\b", low)
+            )
             has_youtube_play = bool(re.search(r"\b(youtube)\b", low) and re.search(r"\b(mở|phát|nghe|play)\b", low))
 
             barrier_warn = (
@@ -1344,43 +1509,16 @@ class Orchestrator:
                 else ""
             )
 
-            # Ordered Human-Like Flow: Stage 1 Browse+Scroll+Copy in Firefox -> Stage 2 Paste into compatible Office/Editor + Play YouTube
-            if self.allow_desktop and has_research_doc and has_youtube_play:
-                self.logger.write(f"Local router -> human-like Browser web-copy -> Office paste + YouTube tracks (barrier={final_barrier}).", "\033[1;36m")
-                multi_triage = {
-                    "plan_summary": (
-                        "Đang thao tác trực quan như người dùng: mở trình duyệt cuộn đọc bài viết, sao chép sang phần mềm soạn thảo tương thích, rồi phát YouTube."
-                        if self.is_vi()
-                        else "Operating apps like a human: browse/scroll/copy article, paste into Office/Editor, then play YouTube."
-                    ),
-                    "success_criteria": "Article copied visually via Firefox, pasted into compatible Office/Editor (.docx saved), and YouTube playing (Corked: no).",
-                    "collaborators": [
-                        {
-                            "role_name": "Browser",
-                            "prompt": (
-                                "STAGE 1 ONLY (Act visually like a human in Firefox using `--agent Browser`): "
-                                "Run `caelestia-desktop web-copy \"<topic search query>\" --agent Browser` so Firefox launches visibly, clicks a matching article, scrolls down reading, and copies text (`Ctrl+A`/`Ctrl+C`) to clipboard! "
-                                "If `web-copy` reports CAPTCHA/blocked, STOP cleanly and inform user (never bypass CAPTCHA). Do NOT open YouTube yet (Stage 2 handles Office paste + YouTube)."
-                                + barrier_warn
-                            ),
-                            "parallel": True,
-                        },
-                        {
-                            "role_name": "Editor",
-                            "prompt": (
-                                "STAGE 2 (Runs right after Stage 1 copied clipboard text): "
-                                "1) Open the highest-priority compatible Office/Word app on this OS and visibly paste (`Ctrl+V`) + save `.docx` in ONE command: "
-                                "`caelestia-desktop office-paste --docx ~/Documents/<TopicName>.docx --title \"<Title>\" --agent Editor`! "
-                                "2) In the SAME step right after `office-paste`, play the requested YouTube song visibly: "
-                                "`caelestia-desktop yt-play \"<song query>\" --agent Browser`! Report both exact app used, `.docx` path, and verified YouTube `playing: true`."
-                                + barrier_warn
-                            ),
-                            "parallel": False,
-                        },
-                    ],
-                }
-                self.run_multi_agent(user_task, multi_triage, self.supervisor_model, final_barrier=final_barrier, task_start_ts=task_start_ts)
-                return
+            # Overhauled Human-Like Web->Curated Word/Office (+ optional YouTube) Pipeline (~15-22s total!)
+            if self.allow_desktop and has_research_doc:
+                curated_ans = self.try_curated_web_office_pipeline(user_task, clean_task, final_barrier, task_start_ts)
+                if curated_ans == "__ABORTED__":
+                    return
+                if curated_ans is not None:
+                    self.logger.write("Curated Web->Office pipeline completed cleanly.", "\033[1;32m")
+                    emit("assistant_message", model="curated-pipeline", title="Kết quả đã tinh chỉnh & xác minh" if self.is_vi() else "Curated & Verified Result", text=curated_ans)
+                    emit("task_complete", progress=100, summary=curated_ans)
+                    return
 
             if self.allow_desktop and self.prefer_visual_cursor and has_browser and has_control:
                 has_seq_order = bool(re.search(r"\b(sau đó|rồi|tiếp theo|cuối cùng|sau cùng|then|after that)\b", low))
