@@ -56,6 +56,8 @@ Singleton {
     property bool miniHudHovered: false
     property bool compactRunActive: false
     property var activeCursors: []
+    property int _cursorLingerMs: 3500
+    property real _taskEndedAt: 0
 
     signal monitorRequested()
     signal cursorUpdated(string cursorId, real x, real y, string action, string label, string colorHex, bool clicked)
@@ -316,12 +318,38 @@ Singleton {
         return "#60A5FA"; // Default Vibrant Blue
     }
 
+    function expireCursor(agentId: string): void {
+        const cid = String(agentId || "").trim();
+        if (!cid)
+            return;
+        const prev = root.activeCursors || [];
+        const kept = prev.filter(c => c.id !== cid);
+        if (kept.length !== prev.length) {
+            root.activeCursors = kept;
+            root.cursorExpired(cid);
+        }
+    }
+
+    function clearAllCursors(): void {
+        for (const c of (root.activeCursors || []))
+            root.cursorExpired(c.id);
+        root.activeCursors = [];
+    }
+
     function updateCursor(x: int, y: int, action: string, label: string, clicked: bool, agentId: string): void {
         if (!showGhostCursor)
             return;
         const cid = String(agentId || "Meow AI").trim() || "Meow AI";
         const now = Date.now();
-        const next = (activeCursors || []).slice();
+        let next = (activeCursors || []).slice();
+        // If a specialized primary worker (e.g. Browser) takes over while "Meow AI" is only in idle placeholder state, hand off cleanly
+        if (cid !== "Meow AI" && cid !== "Control") {
+            const phIdx = next.findIndex(c => c.id === "Meow AI" && c.action === "thinking");
+            if (phIdx >= 0) {
+                next.splice(phIdx, 1);
+                cursorExpired("Meow AI");
+            }
+        }
         const idx = next.findIndex(c => c.id === cid);
         const prevTick = idx >= 0 ? Number(next[idx].pulseTick || 0) : 0;
         const col = cursorPaletteColor(cid);
@@ -342,6 +370,7 @@ Singleton {
         // Keep max 4 visible concurrent cursors
         activeCursors = next.slice(-4);
         cursorUpdated(cid, x, y, entry.action, entry.label, col, clicked);
+        _cursorLingerMs = running ? 1400 : 3500;
         cursorPruneTimer.restart();
     }
 
@@ -466,6 +495,10 @@ Singleton {
         activeSessionId = sid;
         currentLogPath = logFile;
         running = true;
+        _taskEndedAt = 0;
+        clearAllCursors();
+        if (showGhostCursor)
+            updateCursor(1480, 110, "thinking", trChat("Đang phân tích...", "Thinking..."), false, "Meow AI");
         currentPhase = "planning";
         currentProgress = 10;
         phaseDetail = trChat("Đang khởi tạo trợ lý AI...", "Initializing AI assistant...");
@@ -572,6 +605,10 @@ Singleton {
                 label: `${who}${ev.detail}`
             });
             liveSteps = nextSteps;
+        } else if (t === "cursor_done") {
+            const whoDone = String(ev.agent || "").trim();
+            if (whoDone)
+                expireCursor(whoDone);
         } else if (t === "model_switch") {
             refreshCooldowns();
             const msg = trChat(
@@ -611,8 +648,14 @@ Singleton {
             currentProgress = 100;
             phaseDetail = trChat("Đã hoàn tất và kiểm chứng thành công.", "Verified & completed.");
             running = false;
+            _taskEndedAt = Date.now();
+            _cursorLingerMs = 1300;
             hasPendingQuestion = false;
             pendingQuestion = null;
+            for (const c of (root.activeCursors || []))
+                cursorUpdated(c.id, c.x, c.y, "done", trChat("Hoàn tất", "Done"), c.colorHex, false);
+            if ((root.activeCursors || []).length > 0)
+                cursorPruneTimer.restart();
             saveCurrentSession();
             refreshLogStats();
             if (compactRunActive)
@@ -626,6 +669,10 @@ Singleton {
             currentPhase = "error";
             phaseDetail = ev.message || trChat("Tác vụ gặp lỗi.", "Task failed.");
             running = false;
+            _taskEndedAt = Date.now();
+            _cursorLingerMs = 900;
+            if ((root.activeCursors || []).length > 0)
+                cursorPruneTimer.restart();
             hasPendingQuestion = false;
             pendingQuestion = null;
             appendMessage("system", trChat("Thông báo", "Notice"), ev.message || "Unknown error.", "");
@@ -695,13 +742,17 @@ Singleton {
 
     Timer {
         id: cursorPruneTimer
-        interval: 600
+        interval: 400
         repeat: true
         onTriggered: {
+            // Keep cursors alive continuously throughout the entire AI task!
+            if (root.running)
+                return;
             const now = Date.now();
             const kept = [];
             for (const c of (root.activeCursors || [])) {
-                if ((now - Number(c.updatedAt || 0)) < 3200)
+                const refTs = root._taskEndedAt > 0 ? Math.max(root._taskEndedAt, Number(c.updatedAt || 0)) : Number(c.updatedAt || 0);
+                if ((now - refTs) < root._cursorLingerMs)
                     kept.push(c);
                 else
                     root.cursorExpired(c.id);
@@ -780,6 +831,10 @@ Singleton {
             root.refreshCooldowns();
             if (root.running) {
                 root.running = false;
+                root._taskEndedAt = Date.now();
+                root._cursorLingerMs = 900;
+                if ((root.activeCursors || []).length > 0)
+                    cursorPruneTimer.restart();
                 if (root.currentPhase !== "done" && root.currentPhase !== "error") {
                     root.currentPhase = exitCode === 0 ? "done" : "error";
                     root.currentProgress = exitCode === 0 ? 100 : root.currentProgress;

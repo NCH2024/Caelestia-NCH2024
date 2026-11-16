@@ -160,16 +160,41 @@ Variants {
                         }
                     }
 
-                    // Glowing aura trailing cursor
+                    // Glowing aura trailing cursor (soft pulse while thinking/done)
                     StyledRect {
+                        id: cursorAura
                         x: cursorGroup.x - 14
                         y: cursorGroup.y - 14
                         width: 34
                         height: 34
                         radius: 17
+                        scale: auraPulse
                         color: Qt.alpha(cursorRoot.accent, 0.24)
-                        border.width: 1
-                        border.color: Qt.alpha(cursorRoot.accent, 0.6)
+                        border.width: 1.2
+                        border.color: Qt.alpha(cursorRoot.accent, 0.65)
+
+                        property real auraPulse: 1.0
+
+                        SequentialAnimation on auraPulse {
+                            running: cursorRoot.action === "thinking"
+                            loops: Animation.Infinite
+                            onRunningChanged: {
+                                if (!running)
+                                    cursorAura.auraPulse = 1.0;
+                            }
+                            NumberAnimation {
+                                from: 0.92
+                                to: 1.28
+                                duration: 750
+                                easing.type: Easing.InOutSine
+                            }
+                            NumberAnimation {
+                                from: 1.28
+                                to: 0.92
+                                duration: 750
+                                easing.type: Easing.InOutSine
+                            }
+                        }
                     }
 
                     // Smooth 120Hz interpolated pointer + floating label pill
@@ -252,6 +277,10 @@ Variants {
                                             return "center_focus_strong";
                                         if (cursorRoot.action === "scan")
                                             return "screenshot_monitor";
+                                        if (cursorRoot.action === "thinking")
+                                            return "psychology";
+                                        if (cursorRoot.action === "done")
+                                            return "check_circle";
                                         return "auto_awesome";
                                     }
                                     fontStyle: Tokens.font.icon.small

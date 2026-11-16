@@ -87,19 +87,19 @@ def main():
   - Cycle / Gaming toggle: `caelestia shell modes cycle` | `caelestia shell modes toggleGaming`
   - Verify current mode: `grep activeModeId ~/.config/caelestia/extra.json` & `powerprofilesctl get`
 - **Nexus Settings Pages:** `caelestia shell nexus openPage <0..15>` (`0`: Modes, `1`: Device Care, `5`: Equalizer, `7`: Updates, `13`: Shortcuts, `14`: AI Automation)
-- **Media / Audio / Display / Lock:** `playerctl status`, `playerctl metadata --format '{{{{playerName}}}}: {{{{title}}}} [{{{{status}}}}]'`, `wpctl set-volume @DEFAULT_AUDIO_SINK@ 80%`, `brightnessctl set 100%`, `caelestia shell lock lock`
+- **Media / Audio / Display / Lock:** `pactl list sink-inputs` (Firefox YouTube playback -> check `Corked: no`), `playerctl status` (native players), `wpctl set-volume @DEFAULT_AUDIO_SINK@ 80%`, `brightnessctl set 100%`, `caelestia shell lock lock`
 - **Telemetry / CPU:** `caelestia-telemetry` (safe thermal/fan/GPU readout), `scxctl get`
 
 ## 3. Real-Time Multi-Cursor Computer-Use Protocol (`caelestia-desktop`)
-- Every `caelestia-desktop` command supports `--agent <Tag>` (e.g., `--agent Browser`, `--agent Control`, `--agent Editor`) to render distinct color-coded live 120Hz pointers & click ripples on screen simultaneously (physical `ydotool` pointer access is thread-safe via `flock`).
-- **Fast Text Clicker (Zero Vision Wait):**
-  - `caelestia-desktop find "<text>" [--window firefox|quickshell]` -> sub-second `tesseract` pixel `(x, y)` coordinates of visible UI text/buttons!
-  - `caelestia-desktop click-text "<text>" [--window <app>] [--agent <Tag>]` -> finds button text on screen, glides `<Tag>` cursor smoothly to it, and clicks with ripple in ONE command!
-- **Standard GUI Actions:**
-  - Window list / focus / launch: `caelestia-desktop windows`, `caelestia-desktop launch firefox "https://www.youtube.com" --agent Browser`, `caelestia-desktop focus firefox --agent Browser`
-  - Grid screenshot + 1px click (when element has no text label, like thumbnails/icons): `caelestia-desktop screen --grid --out /tmp/ai_screen.png --agent Browser` -> `view_file` -> `caelestia-desktop click <x> <y> --agent Browser`
-  - UTF-8 / Vietnamese input: `caelestia-desktop type "<text>" --enter --agent Browser` | Keys: `caelestia-desktop key ctrl+l --agent Browser` | Scroll: `caelestia-desktop scroll -5 --x <x> --y <y> --agent Browser`
-- **Multi-Surface Parallel Demo:** When operating two distinct apps/panels (e.g. Firefox + Nexus/Quick Settings/Editor), assign `--agent Browser` for browser clicks and `--agent Control` for system panels (`caelestia shell nexus openPage 0` -> `click-text "Cinema" --window quickshell --agent Control`).
+- Every `caelestia-desktop` command supports `--agent <Tag>` (e.g., `--agent "Meow AI"`, `--agent Browser`, `--agent Control`) to render distinct color-coded live 120Hz pointers & click ripples (primary cursor stays alive throughout the task; parallel workers add auxiliary cursors via `flock`).
+- **Fast Text Clicker (`~0.8s`, Zero Vision Wait):**
+  - `caelestia-desktop click-text "<text>" [--window firefox|quickshell] [--wait 5] [--agent <Tag>]` -> accent-insensitive OCR (`Hoa Minzy` matches `Hòa Minzy`) + smooth glide + click in ONE command!
+  - `caelestia-desktop find "<text>" [--window <app>] [--wait 3]` -> returns exact pixel `(x, y)` coordinates.
+- **Zero-Screenshot Browser Rule:** NEVER open `youtube.com` homepage + take screenshots just to click search! Launch `https://www.youtube.com/results?search_query=<query>` directly and chain `&& caelestia-desktop click-text "<keyword>" --window firefox --wait 5 --agent Browser`.
+- **Fallback GUI Actions (when element has no text label, like thumbnails/icons):**
+  - Fast grid screenshot + 1px click: `caelestia-desktop screen --grid --fast --out /tmp/ai_screen.jpg --agent Browser` -> `view_file` -> `caelestia-desktop click <x> <y> --agent Browser`
+  - Window / Type / Keys / Scroll: `caelestia-desktop windows`, `launch`, `focus`, `type "<text>" --enter`, `key ctrl+l`, `scroll -5 --x <x> --y <y>`.
+- **Multi-Surface Parallel:** Never execute terminal barriers (`caelestia shell lock lock`) inside a parallel track when Browser/App work is still running.
 
 ## 4. Coding & Verification Standard
 - Never claim checks pass without running them (`qmllint`, `python3 -m py_compile`, `bash -n`).

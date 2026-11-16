@@ -17,8 +17,10 @@ import os
 import subprocess
 import sys
 import time
+import unicodedata
+from urllib.parse import quote_plus
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 LOCK_PATH = "/tmp/caelestia_pointer.lock"
 
@@ -162,7 +164,14 @@ def press_combo(combo: str):
     run(["ydotool", "key", *seq])
 
 
-def draw_grid(img_path: str):
+def strip_accents(text: str) -> str:
+    """Normalize Vietnamese/Unicode text to lowercase ASCII for fast accent-insensitive matching."""
+    text = text.replace("đ", "d").replace("Đ", "D")
+    nfkd = unicodedata.normalize("NFD", text)
+    return "".join(ch for ch in nfkd if unicodedata.category(ch) != "Mn").lower()
+
+
+def draw_grid(img_path: str, fast: bool = False):
     im = Image.open(img_path).convert("RGBA")
     overlay = Image.new("RGBA", im.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
@@ -186,6 +195,14 @@ def draw_grid(img_path: str):
             draw.text((4, y + 3), str(y), fill=(255, 210, 0, 255), font=font)
 
     out = Image.alpha_composite(im, overlay).convert("RGB")
+    ext = Path(img_path).suffix.lower()
+    if fast or ext in (".jpg", ".jpeg"):
+        if w > 1280:
+            nh = round(h * (1280 / w))
+            out = out.resize((1280, nh), Image.Resampling.BILINEAR)
+        if ext in (".jpg", ".jpeg"):
+            out.save(img_path, "JPEG", quality=82, optimize=True)
+            return
     out.save(img_path)
 
 
@@ -216,8 +233,8 @@ def hypr_focus(target: str) -> bool:
     return r.returncode == 0
 
 
-def ocr_find_matches(query: str, window_filter: str | None = None, lang: str = "eng+vie") -> list[dict]:
-    """Capture screen (or cropped window) and return pixel centers of matching phrases."""
+def _ocr_scan_once(query: str, window_filter: str | None = None, lang: str = "auto") -> list[dict]:
+    """Capture screen/window, preprocess (0.65x grayscale BMP, auto-invert dark UI) -> sub-second TSV OCR."""
     ox, oy = 0, 0
     region_arg = None
     if window_filter:
@@ -228,27 +245,47 @@ def ocr_find_matches(query: str, window_filter: str | None = None, lang: str = "
             if w > 20 and h > 20:
                 region_arg = f"{ox},{oy} {w}x{h}"
 
-    tmp = f"/tmp/ai_find_{os.getpid()}.png"
+    pid = os.getpid()
+    raw_png = f"/tmp/ai_find_{pid}.png"
+    prep_bmp = f"/tmp/ai_find_{pid}.bmp"
     gcmd = ["grim"]
     if region_arg:
         gcmd.extend(["-g", region_arg])
-    gcmd.append(tmp)
+    gcmd.append(raw_png)
     if run(gcmd).returncode != 0:
         return []
 
-    langs = run(["tesseract", "--list-langs"]).stdout
-    use_lang = lang
-    if "vie" not in langs and "eng" in langs:
-        use_lang = "eng"
-    elif "eng" not in langs:
-        use_lang = "osd"
-
-    tsv = run(["tesseract", tmp, "stdout", "-l", use_lang, "--psm", "11", "tsv"]).stdout
+    scale = 0.65
     try:
-        os.remove(tmp)
+        im = Image.open(raw_png).convert("L")
+        # Invert dark themes to dark-text-on-light for dramatically faster, sharper OCR
+        hist = im.histogram()
+        total_px = sum(hist) or 1
+        mean_lum = sum(i * c for i, c in enumerate(hist)) / total_px
+        if mean_lum < 125:
+            im = ImageOps.invert(im)
+        if im.width >= 900:
+            nw = max(320, round(im.width * scale))
+            nh = max(200, round(im.height * scale))
+            im = im.resize((nw, nh), Image.Resampling.BILINEAR)
+        else:
+            scale = 1.0
+        im.save(prep_bmp)
+        src_img = prep_bmp
     except Exception:
-        pass
+        scale = 1.0
+        src_img = raw_png
 
+    use_lang = "eng" if lang in ("auto", "", None) else lang
+    tsv = run(["tesseract", src_img, "stdout", "-l", use_lang, "--psm", "11", "tsv"]).stdout
+    for p in (raw_png, prep_bmp):
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+        except Exception:
+            pass
+
+    inv_scale = 1.0 / scale
     words = []
     lines_map = {}
     for row in tsv.splitlines()[1:]:
@@ -261,35 +298,58 @@ def ocr_find_matches(query: str, window_filter: str | None = None, lang: str = "
             left, top, width, height = int(cols[6]), int(cols[7]), int(cols[8]), int(cols[9])
         except Exception:
             continue
-        if not txt or conf < 25 or width <= 0 or height <= 0:
+        if not txt or conf < 20 or width <= 0 or height <= 0:
             continue
-        cx = ox + left + width // 2
-        cy = oy + top + height // 2
-        item = {"text": txt, "x": cx, "y": cy, "left": ox + left, "right": ox + left + width, "top": oy + top, "bottom": oy + top + height}
+        r_left = round(left * inv_scale)
+        r_top = round(top * inv_scale)
+        r_w = round(width * inv_scale)
+        r_h = round(height * inv_scale)
+        cx = ox + r_left + r_w // 2
+        cy = oy + r_top + r_h // 2
+        norm_txt = strip_accents(txt)
+        item = {
+            "text": txt,
+            "norm": norm_txt,
+            "x": cx,
+            "y": cy,
+            "left": ox + r_left,
+            "right": ox + r_left + r_w,
+            "top": oy + r_top,
+            "bottom": oy + r_top + r_h,
+        }
         words.append(item)
         line_key = (cols[1], cols[2], cols[3], cols[4])
         lines_map.setdefault(line_key, []).append(item)
 
-    qlow = query.lower().strip()
+    qnorm = strip_accents(query).strip()
+    qtokens = [tok for tok in qnorm.split() if tok]
     hits = []
-    # 1. Check multi-word line phrases first
     for _, wlist in lines_map.items():
         wlist.sort(key=lambda d: d["left"])
         joined = " ".join(w["text"] for w in wlist)
-        if qlow in joined.lower():
-            matched = [w for w in wlist if any(part in w["text"].lower() for part in qlow.split())] or wlist
+        jnorm = strip_accents(joined)
+        if qnorm and (qnorm in jnorm or (len(qtokens) >= 2 and all(tok in jnorm for tok in qtokens))):
+            matched = [w for w in wlist if any(tok in w["norm"] for tok in qtokens)] or wlist
             avg_x = sum(w["x"] for w in matched) // len(matched)
             avg_y = sum(w["y"] for w in matched) // len(matched)
-            hits.append({"text": joined, "x": avg_x, "y": avg_y, "score": 2})
+            hits.append({"text": joined, "x": avg_x, "y": avg_y, "score": 3 if qnorm in jnorm else 2})
 
-    # 2. Check individual words if phrase didn't hit
-    if not hits:
+    if not hits and qtokens:
         for w in words:
-            if qlow in w["text"].lower():
+            if qnorm in w["norm"] or (len(qtokens) == 1 and qtokens[0] in w["norm"]):
                 hits.append({"text": w["text"], "x": w["x"], "y": w["y"], "score": 1})
 
     hits.sort(key=lambda d: (-d["score"], d["y"], d["x"]))
     return hits
+
+
+def ocr_find_matches(query: str, window_filter: str | None = None, lang: str = "auto", wait_sec: float = 0.0) -> list[dict]:
+    deadline = time.time() + max(0.0, float(wait_sec or 0.0))
+    while True:
+        hits = _ocr_scan_once(query, window_filter, lang)
+        if hits or time.time() >= deadline:
+            return hits
+        time.sleep(0.35)
 
 
 def cmd_screen(args):
@@ -303,7 +363,7 @@ def cmd_screen(args):
         print(json.dumps({"ok": False, "error": res.stderr.strip()}))
         sys.exit(1)
     if args.grid:
-        draw_grid(out)
+        draw_grid(out, fast=args.fast)
     w, h, scale = get_monitor_info()
     cx, cy = get_cursor_pos()
     notify_hud(cx if cx >= 0 else w // 2, cy if cy >= 0 else h // 2, "scan", "Quan sát màn hình", False, args.agent)
@@ -430,23 +490,29 @@ def cmd_key(args):
 
 
 def cmd_find(args):
-    hits = ocr_find_matches(args.query, args.window, args.lang)
+    if args.window:
+        with pointer_lock():
+            hypr_focus(args.window)
+            time.sleep(0.12)
+            hits = ocr_find_matches(args.query, args.window, args.lang, args.wait)
+    else:
+        hits = ocr_find_matches(args.query, args.window, args.lang, args.wait)
     print(json.dumps({"found": len(hits) > 0, "count": len(hits), "matches": hits[:10]}, ensure_ascii=False))
     if not hits:
         sys.exit(1)
 
 
 def cmd_click_text(args):
-    hits = ocr_find_matches(args.query, args.window, args.lang)
-    if not hits:
-        print(json.dumps({"ok": False, "error": f"Text '{args.query}' not found on screen"}))
-        sys.exit(1)
-    idx = min(max(0, args.index), len(hits) - 1)
-    target = hits[idx]
     with pointer_lock():
         if args.window:
             hypr_focus(args.window)
-            time.sleep(0.08)
+            time.sleep(0.12)
+        hits = ocr_find_matches(args.query, args.window, args.lang, args.wait)
+        if not hits:
+            print(json.dumps({"ok": False, "error": f"Text '{args.query}' not found on screen"}))
+            sys.exit(1)
+        idx = min(max(0, args.index), len(hits) - 1)
+        target = hits[idx]
         lbl = f"Click '{args.query[:20]}'"
         ax, ay = calibrated_move(target["x"], target["y"], lbl, args.agent)
         notify_hud(ax if ax >= 0 else target["x"], ay if ay >= 0 else target["y"], "click", lbl, True, args.agent)
@@ -475,6 +541,7 @@ def main():
 
     sp = sub.add_parser("screen", help="Capture screen (optionally with pixel coordinate grid)")
     sp.add_argument("--grid", action="store_true")
+    sp.add_argument("--fast", action="store_true", help="Downscale grid screenshot cleanly for faster AI vision decode")
     sp.add_argument("--region", help="Optional region 'x,y wxh'")
     sp.add_argument("--out", default="/tmp/ai_screen.png")
     add_agent_arg(sp)
@@ -530,14 +597,16 @@ def main():
     fnd = sub.add_parser("find", help="Find on-screen UI text and return exact (x, y) pixel centers")
     fnd.add_argument("query")
     fnd.add_argument("--window", default=None, help="Limit OCR to window class/title substring")
-    fnd.add_argument("--lang", default="eng+vie")
+    fnd.add_argument("--lang", default="auto")
+    fnd.add_argument("--wait", type=float, default=0.0, help="Wait/poll seconds until matching text appears")
     add_agent_arg(fnd)
     fnd.set_defaults(func=cmd_find)
 
     ct = sub.add_parser("click-text", help="Locate text on screen and immediately glide cursor + click it")
     ct.add_argument("query")
     ct.add_argument("--window", default=None, help="Limit OCR to window class/title substring")
-    ct.add_argument("--lang", default="eng+vie")
+    ct.add_argument("--lang", default="auto")
+    ct.add_argument("--wait", type=float, default=0.0, help="Wait/poll seconds until matching text appears")
     ct.add_argument("--index", type=int, default=0)
     ct.add_argument("--button", choices=["left", "right", "middle"], default="left")
     add_agent_arg(ct)

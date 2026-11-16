@@ -593,12 +593,11 @@ class Orchestrator:
             desktop_rule = "Desktop GUI actions are DISABLED; use CLI/files only."
         elif wants_visual:
             desktop_rule = (
-                "VISUAL REAL-TIME CURSOR MODE ACTIVE: The user wants to SEE animated AI cursors visibly glide and click UI elements on-screen!\n"
-                "- Do NOT silently scrape with `curl` or bypass interactive UI controls when opening browsers/apps or toggling visual panels.\n"
-                "- Use `caelestia-desktop` with distinct `--agent <Tag>` names (`--agent Browser`, `--agent Control`, `--agent Editor`) so colored 120Hz Ghost Cursors appear live:\n"
-                "  1) Launch/focus app (`caelestia-desktop launch firefox \"https://www.youtube.com\" --agent Browser`).\n"
-                "  2) Use `caelestia-desktop click-text \"<label>\" --window <app> --agent <Tag>` OR `caelestia-desktop screen --grid --out /tmp/ai_screen.png --agent <Tag>` + `view_file` + `click <x> <y> --agent <Tag>` to click search bars, buttons, thumbnails, and UI cards visually!\n"
-                "  3) Type queries with `caelestia-desktop type \"<text>\" --enter --agent <Tag>`."
+                "VISUAL REAL-TIME CURSOR MODE ACTIVE (FAST LANE):\n"
+                "- Use `caelestia-desktop` with `--agent \"Meow AI\"` (or `--agent Browser` / `--agent Control` in parallel tracks) so live Ghost Cursors track your work without blinking out.\n"
+                "- SPEED RULE #1 — SKIP HOMEPAGE & SCREENSHOTS WHEN POSSIBLE: For YouTube/web searches, launch the direct search URL (`https://www.youtube.com/results?search_query=<url_encoded_query>` or Google search URL), then immediately run accent-insensitive OCR click: `caelestia-desktop click-text \"<title/artist keyword>\" --window firefox --wait 5 --agent \"Meow AI\"`!\n"
+                "- SPEED RULE #2 — BATCH COMMANDS: Combine `launch ... && click-text ... --wait 5` (or `nexus openPage 0 && click-text \"Cinema\" --window quickshell --wait 2.5`) inside ONE shell call instead of separate turns!\n"
+                "- FALLBACK ONLY: If `click-text` returns not found, run `caelestia-desktop screen --grid --fast --out /tmp/ai_screen.jpg --agent \"Meow AI\"` + `read_file` -> `click <x> <y> --agent \"Meow AI\"`."
             )
         else:
             desktop_rule = "Desktop GUI control (`caelestia-desktop`) is ALLOWED."
@@ -696,6 +695,9 @@ class Orchestrator:
                 f"SCOPE:\n{sub_prompt}"
             )
             ok_w, out_w, err_w, eff_m, _ = self.run_agy("executor", rname, full_prompt, self.worker_model)
+            # Auxiliary parallel worker cursors retire cleanly when their track finishes; primary stays alive until task_complete
+            if rname not in ("Meow AI", "Browser"):
+                emit("cursor_done", agent=rname)
             return {
                 "role_name": rname,
                 "ok": ok_w,
@@ -738,7 +740,19 @@ class Orchestrator:
 
         return results
 
-    def run_multi_agent(self, user_task: str, triage: dict, eff_coord: str):
+    def run_final_barrier(self, final_barrier: str | None) -> str:
+        """Execute strict end-of-task barrier action (e.g., lock screen) ONLY after all tracks finish."""
+        if not final_barrier:
+            return ""
+        if final_barrier == "lock":
+            self.logger.write("Executing post-completion barrier: caelestia shell lock lock", "\033[1;36m")
+            res = subprocess.run(["caelestia", "shell", "lock", "lock"], capture_output=True, text=True)
+            if res.returncode == 0:
+                return "Đã khóa màn hình sau khi tất cả phân hệ hoàn tất." if self.is_vi() else "Locked screen after all tracks completed."
+            return f"Không thể khóa màn hình ({res.stderr.strip() or res.returncode})."
+        return ""
+
+    def run_multi_agent(self, user_task: str, triage: dict, eff_coord: str, final_barrier: str | None = None):
         """Tier 3 Heavy Engineering / Multi-Workstream Team + Coordinator Audit."""
         collaborators = (triage.get("collaborators") or [])[:3]
         if not collaborators:
@@ -794,18 +808,32 @@ class Orchestrator:
                 "phase",
                 phase="verifying",
                 progress=86,
-                detail="Đang kiểm chứng & tổng hợp..." if self.is_vi() else "Verifying & synthesizing outcome...",
+                detail="Đang tổng hợp kết quả..." if self.is_vi() else "Synthesizing verified outcome...",
             )
             self.logger.write("Coordinator verifying & synthesizing outputs...", "\033[1;35m")
 
             bundled = "\n\n".join(accumulated[-5:])
+            all_ok = bool(collab_results) and all(r.get("ok") for r in collab_results)
+            has_blocker = bool(re.search(r"\b(blocked|unable to|cannot|could not|failed to|chưa thể|không thể|bị khóa)\b", bundled.lower()))
+            fast_synth = all_ok and not has_blocker
+            audit_model = self.fast_router_model(self.supervisor_model) if fast_synth else self.supervisor_model
+            no_tool_hint = (
+                "All tracks succeeded cleanly and ran their own checks — synthesize `final_reply` directly WITHOUT running redundant verification commands."
+                if fast_synth
+                else "Verify actual edited files/tests/status cleanly and choose ONE verdict:"
+            )
+            barrier_note = (
+                f"\nNOTE: Post-task barrier '{final_barrier}' will execute automatically right after you confirm verdict='complete'."
+                if final_barrier
+                else ""
+            )
             synth_prompt = (
                 f"Coordinator Audit (Round {round_idx}, auto-polish left: {max_auto_polish - polish_used}).\n"
-                "Verify actual edited files/tests/status cleanly and choose ONE verdict:\n"
+                f"{no_tool_hint}\n"
                 '- `"complete"`: Everything passes & satisfies the request; write `final_reply` directly for the user.\n'
                 '- `"needs_polish"`: Fixable lint/code/test error exists & polish > 0; set `polish_prompt`.\n'
                 '- `"needs_user_input"`: Ambiguous or external blocker; set `question_for_user`.\n'
-                f"{self.language_instruction()}\n\n"
+                f"{self.language_instruction()}{barrier_note}\n\n"
                 f"USER REQUEST:\n{user_task}\n\n"
                 f"SUCCESS CRITERIA:\n{success_criteria}\n\n"
                 f"SPECIALIST OUTPUTS:\n{bundled}\n\n"
@@ -813,10 +841,10 @@ class Orchestrator:
             )
 
             ok_v, synth_raw, err_v, eff_c2, coord_conv_id = self.run_agy(
-                "coordinator",
+                "router" if fast_synth else "coordinator",
                 "Coordinator Verify",
                 synth_prompt,
-                self.supervisor_model,
+                audit_model,
                 conversation_id=coord_conv_id,
             )
             if not ok_v:
@@ -832,6 +860,9 @@ class Orchestrator:
             self.logger.write(f"Coordinator Verdict -> {verdict}", "\033[1;35m")
 
             if verdict == "complete":
+                barrier_msg = self.run_final_barrier(final_barrier)
+                if barrier_msg:
+                    final_reply = f"{final_reply}\n- {barrier_msg}"
                 emit("assistant_message", model=eff_c2, title="Kết quả đã xác minh" if self.is_vi() else "Verified Result", text=final_reply)
                 emit("task_complete", progress=100, summary=final_reply)
                 self.logger.write("TASK COMPLETED SUCCESSFULLY.", "\033[1;32m")
@@ -986,8 +1017,16 @@ class Orchestrator:
             low = user_task.lower()
             has_browser = bool(re.search(r"\b(trình duyệt|browser|firefox|youtube|google|web|bài báo|trang web)\b", low))
             has_control = bool(re.search(r"\b(chế độ|mode|cài đặt|settings|nexus|bảng điều khiển|độ sáng|âm lượng|equalizer|phần mềm|thống kê)\b", low))
+            final_barrier = None
+            if re.search(r"\b(cuối cùng|sau cùng|cuối|finally|then lock).*?(khóa màn hình|khóa máy|lock screen|lock)\b", low) or re.search(r"\b(khóa màn hình|lock screen)\b", low):
+                final_barrier = "lock"
             if self.allow_desktop and self.prefer_visual_cursor and has_browser and has_control:
-                self.logger.write("Local router -> parallel multi-cursor GUI tracks (Browser + Control).", "\033[1;36m")
+                self.logger.write(f"Local router -> parallel multi-cursor GUI tracks (Browser + Control, barrier={final_barrier}).", "\033[1;36m")
+                barrier_warn = (
+                    " CRITICAL: Do NOT lock/sleep the screen yet — screen lock is handled automatically AFTER all tracks finish!"
+                    if final_barrier
+                    else ""
+                )
                 multi_triage = {
                     "plan_summary": (
                         "Đang điều phối đồng thời 2 con trỏ AI thao tác trên Trình duyệt và Bảng điều khiển."
@@ -999,22 +1038,25 @@ class Orchestrator:
                         {
                             "role_name": "Browser",
                             "prompt": (
-                                "Handle ONLY the browser/web portion of USER REQUEST visually with `caelestia-desktop --agent Browser`: "
-                                "launch/focus firefox, click search bar (`screen --grid` + `view_file` or `find`/`click-text`), type query with `--agent Browser`, click target video/article visually."
+                                "Handle ONLY the browser/web portion visually in 1-2 batched commands using `--agent Browser`: "
+                                "launch `https://www.youtube.com/results?search_query=<query>` (for YouTube) with `caelestia-desktop launch firefox \"...\" --agent Browser`, wait briefly, then run `caelestia-desktop click-text \"<song/title keyword>\" --window firefox --wait 5 --agent Browser` (NO homepage screenshots!). "
+                                "After clicking a YouTube video, wait 1.5s and verify Firefox audio via `pactl list sink-inputs | grep -E \"application.name|Corked\"` (if missing or `Corked: yes`, run `caelestia-desktop focus firefox --agent Browser && caelestia-desktop key k --agent Browser` and re-check `pactl`). NEVER use `playerctl` for Firefox!"
+                                + barrier_warn
                             ),
                             "parallel": True,
                         },
                         {
                             "role_name": "Control",
                             "prompt": (
-                                "Handle ONLY the system settings/control panel/secondary app portion of USER REQUEST visually with `caelestia-desktop --agent Control`: "
-                                "for system modes open `caelestia shell nexus openPage 0` and use `caelestia-desktop click-text` / `click --agent Control` on the visible UI controls (and verify final state via `caelestia shell`/`brightnessctl`/`playerctl` or target app window)."
+                                "Handle ONLY settings/modes/audio/brightness/app actions visually in 1 batched shell call using `--agent Control`: "
+                                "e.g., `caelestia shell nexus openPage 0 && caelestia-desktop click-text \"Cinema\" --window quickshell --wait 2.5 --agent Control && brightnessctl set 100%`, and verify final state (`extra.json`, `brightnessctl get`, etc.)."
+                                + barrier_warn
                             ),
                             "parallel": True,
                         },
                     ],
                 }
-                self.run_multi_agent(user_task, multi_triage, self.supervisor_model)
+                self.run_multi_agent(user_task, multi_triage, self.supervisor_model, final_barrier=final_barrier)
                 return
 
             # Direct Unified Single-Session Execution (saves 4-6s + ~10k tokens vs separate Router boot)
