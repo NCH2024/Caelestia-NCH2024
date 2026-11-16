@@ -11,6 +11,7 @@ import "modules/drawers"
 import "modules/background"
 import "modules/areapicker"
 import "modules/lock"
+import "modules/ai"
 import QtQuick
 import Quickshell
 import qs.services
@@ -31,6 +32,7 @@ ShellRoot {
 
     Background {}
     Drawers {}
+    AiCursorOverlay {}
     AreaPicker {}
     Lock {
         id: lock

@@ -160,7 +160,15 @@ Scope {
         }
 
         function runTask(prompt: string): void {
-            AiAutomationService.runTask(prompt);
+            AiAutomationService.runTask(prompt, false);
+        }
+
+        function runCompactTask(prompt: string): void {
+            AiAutomationService.runTask(prompt, true);
+        }
+
+        function cursorEvent(x: int, y: int, action: string, label: string, clicked: int): void {
+            AiAutomationService.updateCursor(x, y, action, label, clicked === 1);
         }
 
         function openSettings(): void {

@@ -34,6 +34,12 @@ Region {
     }
 
     R {
+        panel: root.panels.aiMiniHud
+        width: panel.width
+        height: panel.height * (1 - root.panels.aiMiniHud.offsetScale)
+    }
+
+    R {
         id: sessionRegion
 
         panel: root.panels.sessionWrapper

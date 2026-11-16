@@ -141,7 +141,14 @@ Press **`SUPER + >`** (or type `>ai <command>` in the Launcher with full `fcitx5
 
 ---
 
-### Meow AI Assistant (Inline Live Progress & Chat)
+### Meow AI Ghost Cursor & Compact Super HUD (`SUPER + >`)
+Invoking a task via **`SUPER + >`** (`>ai <command>`) shows a sleek compact **Mini Progress Popup** directly above the launcher area (expanding full Chat only when clicked) while **Tier 0 Local Fast-Path** executes instant mode/audio/app commands in `< 0.2s` and **`AiCursorOverlay`** renders a smooth 120Hz animated pointer cursor + click ripple during GUI automation.
+
+![Meow AI Ghost Cursor and Mini HUD](assets/screenshots/ai-ghost-cursor.png)
+
+---
+
+### Meow AI Assistant (Full Rich-Markdown Chat & History)
 Floating **Meow AI Assistant** chat window with Liquid Glass optical rims, live inline execution steps & progress bar (no popup terminal clutter by default), Vietnamese/English localization, automatic chat refresh per new request, and interactive confirmation prompts when intervention is needed.
 
 ![Meow AI Assistant Live Progress](assets/screenshots/ai-monitor.png)

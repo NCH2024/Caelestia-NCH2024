@@ -12,6 +12,7 @@ import qs.modules.sidebar as Sidebar
 import qs.modules.utilities as Utilities
 import qs.modules.bar.popouts as BarPopouts
 import qs.modules.utilities.toasts as Toasts
+import qs.modules.ai as Ai
 
 Item {
     id: root
@@ -27,6 +28,7 @@ Item {
     readonly property alias session: session
     readonly property alias sessionWrapper: sessionWrapper
     readonly property alias launcher: launcher
+    readonly property alias aiMiniHud: aiMiniHud
     readonly property alias dashboard: dashboard
     readonly property alias popouts: popoutsWrapper.content
     readonly property alias popoutsWrapper: popoutsWrapper
@@ -105,6 +107,16 @@ Item {
 
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
+    }
+
+    Ai.AiMiniHud {
+        id: aiMiniHud
+
+        screenState: root.screenState
+        launcherWrapper: launcher
+
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: launcher.top
     }
 
     Dashboard.Wrapper {

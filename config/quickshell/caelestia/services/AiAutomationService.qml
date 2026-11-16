@@ -39,6 +39,7 @@ Singleton {
     property bool openWorkerTerminal: false // Hidden by default; live progress renders in Chat
     property bool allowDesktopActions: true
     property bool askOnInvalidResult: true
+    property bool showGhostCursor: true
     property int logRetentionDays: 30 // 7, 14, 30, 90, 180, or 0 (never)
 
     // Persistent conversation history & log storage
@@ -48,6 +49,19 @@ Singleton {
     property string activeSessionId: ""
     property int totalLogFiles: 0
     property int totalLogBytes: 0
+
+    // Compact Mini HUD & Animated AI Ghost Cursor states
+    property bool miniHudVisible: false
+    property bool miniHudHovered: false
+    property bool compactRunActive: false
+    property real cursorX: 960
+    property real cursorY: 540
+    property string cursorAction: "move"
+    property string cursorLabel: ""
+    property real cursorOverlayOpacity: 0.0
+
+    signal monitorRequested()
+    signal cursorPulseTriggered()
 
     // Runtime orchestration & chat state
     property bool loaded: false
@@ -66,8 +80,6 @@ Singleton {
     property var chatMessages: []
     property int _msgSeq: 0
     property string pendingLauncherText: ""
-
-    signal monitorRequested()
 
     function isVi(): bool {
         return chatLanguage === "vi";
@@ -293,6 +305,19 @@ Singleton {
         Quickshell.execDetached(["bash", "-c", `mkdir -p '${root.logsDir}' && setsid -f xdg-open '${root.logsDir}' >/dev/null 2>&1`]);
     }
 
+    function updateCursor(x: int, y: int, action: string, label: string, clicked: bool): void {
+        if (!showGhostCursor)
+            return;
+        cursorX = x;
+        cursorY = y;
+        cursorAction = action || "move";
+        cursorLabel = label || "Operating";
+        cursorOverlayOpacity = 1.0;
+        if (clicked)
+            cursorPulseTriggered();
+        cursorHideTimer.restart();
+    }
+
     function refreshEnvironment(): void {
         if (checkingCli)
             return;
@@ -363,13 +388,16 @@ Singleton {
         ]);
     }
 
-    function runTask(promptText: string): void {
+    function runTask(promptText: string, compactMode: bool): void {
         const clean = String(promptText ?? "").trim();
         if (!clean)
             return;
 
         if (running) {
-            monitorRequested();
+            if (!compactMode)
+                monitorRequested();
+            else
+                miniHudVisible = true;
             if (hasPendingQuestion) {
                 sendReply("retry", clean);
             } else {
@@ -385,7 +413,14 @@ Singleton {
 
         // Refresh chat screen cleanly for every new user request
         clearChat();
-        monitorRequested();
+        compactRunActive = Boolean(compactMode);
+        if (compactRunActive) {
+            miniHudVisible = true;
+            miniHudAutoHideTimer.stop();
+        } else {
+            miniHudVisible = false;
+            monitorRequested();
+        }
 
         if (!cliInstalled) {
             appendMessage(
@@ -534,7 +569,10 @@ Singleton {
             };
             appendMessage("question", trChat("Cần bạn xác nhận", "Confirmation Needed"), pendingQuestion.question, ev.model || "");
             saveCurrentSession();
-            monitorRequested();
+            if (compactRunActive)
+                miniHudVisible = true;
+            else
+                monitorRequested();
             Toaster.toast(
                 trChat("AI cần xác nhận của bạn", "AI Needs Confirmation"),
                 pendingQuestion.question,
@@ -549,9 +587,11 @@ Singleton {
             pendingQuestion = null;
             saveCurrentSession();
             refreshLogStats();
+            if (compactRunActive)
+                miniHudAutoHideTimer.restart();
             Toaster.toast(
                 trChat("Hoàn tất tác vụ AI", "AI Task Completed"),
-                String(ev.summary || "Done.").slice(0, 140),
+                String(ev.summary || "Done.").replace(/[*`#]/g, "").slice(0, 140),
                 "check_circle"
             );
         } else if (t === "task_error") {
@@ -617,9 +657,29 @@ Singleton {
                 openWorkerTerminal: root.openWorkerTerminal,
                 allowDesktopActions: root.allowDesktopActions,
                 askOnInvalidResult: root.askOnInvalidResult,
+                showGhostCursor: root.showGhostCursor,
                 logRetentionDays: root.logRetentionDays
             };
             configFile.setText(JSON.stringify(payload, null, 2));
+        }
+    }
+
+    Timer {
+        id: cursorHideTimer
+        interval: 2200
+        repeat: false
+        onTriggered: root.cursorOverlayOpacity = 0.0
+    }
+
+    Timer {
+        id: miniHudAutoHideTimer
+        interval: 10000
+        repeat: false
+        onTriggered: {
+            if (!root.running && !root.hasPendingQuestion && !root.miniHudHovered)
+                root.miniHudVisible = false;
+            else if (root.miniHudHovered)
+                restart();
         }
     }
 
@@ -821,6 +881,8 @@ Singleton {
                     root.allowDesktopActions = Boolean(d.allowDesktopActions);
                 if (d.askOnInvalidResult !== undefined)
                     root.askOnInvalidResult = Boolean(d.askOnInvalidResult);
+                if (d.showGhostCursor !== undefined)
+                    root.showGhostCursor = Boolean(d.showGhostCursor);
                 if (d.logRetentionDays !== undefined)
                     root.logRetentionDays = Number(d.logRetentionDays);
             } catch (e) {}

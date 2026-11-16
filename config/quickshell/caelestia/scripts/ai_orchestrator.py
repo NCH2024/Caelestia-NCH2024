@@ -847,58 +847,162 @@ class Orchestrator:
 
         emit("task_error", message="Đã vượt quá số lượt tối đa." if self.is_vi() else "Reached max rounds.")
 
+    def try_local_fast_path(self, user_task: str) -> str | None:
+        """
+        Tier 0 (<100ms, 0 LLM tokens): Instant execution for clear single-intent commands.
+        Returns response string if handled cleanly, or None to delegate to AI.
+        """
+        raw = user_task.strip()
+        low = raw.lower()
+        # Skip Tier 0 for compound multi-clause prompts or coding/research tasks
+        if len(raw) > 85 or re.search(r"\b(và|rồi|sau đó|tìm|code|sửa|tạo|viết|thống kê|check|kiểm tra|phân tích)\b", low):
+            return None
+
+        # 1. Instant System Mode Switch
+        mode_map = {
+            "gaming": r"\b(gaming|chơi game|game mode|turbo)\b",
+            "cinema": r"\b(cinema|giải trí|xem phim|media)\b",
+            "work": r"\b(work|làm việc|tập trung|focus)\b",
+            "coding": r"\b(coding|lập trình|developer|dev)\b",
+            "sleep": r"\b(sleep|ngủ|tiết kiệm pin|battery)\b",
+            "standard": r"\b(standard|balanced|cân bằng|bình thường)\b",
+        }
+        if re.search(r"\b(chuyển|đổi|bật|kích hoạt|activate|switch|set)\b", low) and re.search(r"\b(chế độ|mode)\b", low):
+            for mode_id, pat in mode_map.items():
+                if re.search(pat, low):
+                    res = subprocess.run(["caelestia", "shell", "modes", "activate", mode_id], capture_output=True, text=True)
+                    if res.returncode == 0:
+                        return (
+                            f"Đã chuyển chế độ hệ thống sang **{mode_id}** tức thì (`0ms` LLM)."
+                            if self.is_vi()
+                            else f"Switched system mode to **{mode_id}** instantly."
+                        )
+
+        # 2. Instant Audio / Volume / Media
+        if re.fullmatch(r"(tắt tiếng|mute|tắt âm thanh)", low):
+            subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "1"])
+            return "Đã tắt tiếng âm thanh hệ thống." if self.is_vi() else "Muted system audio."
+        if re.fullmatch(r"(bật tiếng|unmute|mở âm thanh)", low):
+            subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "0"])
+            return "Đã bật lại âm thanh." if self.is_vi() else "Unmuted system audio."
+        vol_m = re.search(r"(?:âm lượng|volume)\s*(?:lên|về|là|=)?\s*(\d{1,3})\s*%?", low)
+        if vol_m:
+            pct = max(0, min(150, int(vol_m.group(1))))
+            subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{pct}%"])
+            return f"Đã đặt âm lượng hệ thống thành **{pct}%**." if self.is_vi() else f"Set volume to **{pct}%**."
+        if re.fullmatch(r"(tạm dừng|pause|dừng nhạc|dừng video)", low):
+            subprocess.run(["playerctl", "pause"])
+            return "Đã tạm dừng phát media." if self.is_vi() else "Paused media playback."
+        if re.fullmatch(r"(phát tiếp|tiếp tục phát|play|resume)", low):
+            subprocess.run(["playerctl", "play"])
+            return "Đã tiếp tục phát media." if self.is_vi() else "Resumed media playback."
+        if re.fullmatch(r"(bài tiếp|bài kế|next track|next song)", low):
+            subprocess.run(["playerctl", "next"])
+            return "Đã chuyển sang bài tiếp theo." if self.is_vi() else "Skipped to next track."
+
+        # 3. Instant App Launch
+        app_map = {
+            r"^(?:mở|open|chạy)\s+(?:trình duyệt\s+)?firefox$": ["caelestia-desktop", "launch", "firefox"],
+            r"^(?:mở|open|chạy)\s+terminal$": ["caelestia-desktop", "launch", "foot"],
+            r"^(?:mở|open)\s+(?:cài đặt|settings|nexus)$": ["qs", "-c", "caelestia", "ipc", "call", "nexus", "open"],
+            r"^(?:mở|open)\s+equalizer$": ["qs", "-c", "caelestia", "ipc", "call", "nexus", "openPage", "5"],
+        }
+        for pat, cmd in app_map.items():
+            if re.match(pat, low):
+                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                return f"Đã mở theo yêu cầu (`{cmd[-1]}`)." if self.is_vi() else f"Launched `{cmd[-1]}`."
+
+        return None
+
+    def looks_heavy_engineering(self, user_task: str) -> bool:
+        low = user_task.lower()
+        return bool(
+            len(user_task) > 180
+            or re.search(
+                r"\b(thêm tính năng|xây dựng tính năng|tạo module|tái cấu trúc|refactor|"
+                r"implement feature|add feature|multi-?agent|nghiên cứu.*thống kê|"
+                r"viết giao diện|code thêm)\b",
+                low,
+            )
+        )
+
+    def looks_pure_qa(self, user_task: str) -> bool:
+        low = user_task.lower().strip()
+        if len(low) > 140:
+            return False
+        action_verbs = (
+            r"\b(mở|open|chuyển|đổi|bật|tắt|kiểm tra|check|tìm|search|click|bấm|gõ|type|"
+            r"sửa|edit|tạo|create|xóa|delete|cài|install|chạy|run|phát|play|chụp|screenshot|"
+            r"lưu|save|push|git|commit|cập nhật|update|caelestia|firefox|terminal|file|thư mục)\b"
+        )
+        return not re.search(action_verbs, low)
+
     def run_task(self, user_task: str):
         self.logger.write(f"USER REQUEST: {user_task}", "\033[1;34m")
+
+        # Tier 0: Zero-LLM Instant Local Execution (<100ms, 0 tokens)
+        fast_ans = self.try_local_fast_path(user_task)
+        if fast_ans is not None:
+            self.logger.write(f"Tier 0 local fast-path hit -> {fast_ans}", "\033[1;36m")
+            emit("phase", phase="done", progress=100, detail=fast_ans)
+            emit("assistant_message", model="local-fast", title="Thực thi tức thì" if self.is_vi() else "Instant Action", text=fast_ans)
+            emit("task_complete", progress=100, summary=fast_ans)
+            return
+
+        # Fast 0ms heuristic bypasses extra cold Router LLM call for 90% of requests!
+        if self.looks_pure_qa(user_task):
+            emit("phase", phase="working", progress=35, detail="Đang trả lời nhanh..." if self.is_vi() else "Answering...")
+            qa_model = self.fast_router_model(self.supervisor_model)
+            ok, ans, err, eff_m, _ = self.run_agy(
+                "router",
+                "Meow AI",
+                f"{self.language_instruction()}\nAnswer concisely and accurately in Markdown without running unnecessary tools:\n{user_task}",
+                qa_model,
+            )
+            if not ok:
+                emit("task_error", message=err or "Error")
+                return
+            emit("assistant_message", model=eff_m, title="Trả lời" if self.is_vi() else "Response", text=ans)
+            emit("task_complete", progress=100, summary=ans)
+            self.logger.write("DIRECT FAST QA COMPLETED.", "\033[1;32m")
+            return
+
+        if not self.looks_heavy_engineering(user_task):
+            # Direct Unified Single-Session Execution (saves 4-6s + ~10k tokens vs separate Router boot)
+            plan_msg = (
+                "Đang thực thi trực tiếp trong 1 phiên hợp nhất..."
+                if self.is_vi()
+                else "Executing in single unified session..."
+            )
+            self.logger.write("Local router -> unified single fast lane (skipped extra Router boot).", "\033[1;36m")
+            self.run_single_fast(user_task, plan_msg)
+            return
+
+        # Tier 3: Heavy Multi-Agent Decomposition
         emit(
             "phase",
             phase="planning",
             progress=12,
-            detail="Đang phân loại yêu cầu..." if self.is_vi() else "Routing request...",
+            detail="Đang phân chia phân hệ chuyên trách..." if self.is_vi() else "Decomposing complex task...",
         )
-
-        # Ultra-lean `--effort low` classification (<3-4s)
         triage_prompt = (
-            "You are Meow AI Router. Classify USER REQUEST into ONE mode:\n"
-            '- `"direct"`: Simple Q&A, knowledge, math, chat needing ZERO commands/files/GUI. Fill `direct_answer`.\n'
-            '- `"single"`: Operational, browser/YouTube, system mode switch, quick inspection, or small edit (~1-2 related actions that run fastest in ONE continuous agent). Fill 1-sentence `plan_summary`.\n'
-            '- `"multi"`: Large feature engineering (UI + service + tests), multi-file refactoring, or deep parallel research -> fill 2-3 `collaborators` (NEVER add a redundant verifier worker; set `parallel: true` for independent tasks).\n'
+            "Decompose this complex request into 2-3 focused parallel/sequential specialist tracks.\n"
+            "Never add a redundant verifier worker (Coordinator audits afterwards). Use parallel=true for independent tracks.\n"
             f"{self.language_instruction()}\n\n"
             f"USER REQUEST:\n{user_task}\n\n"
-            'Respond ONLY with JSON:\n'
-            '{"mode":"direct"|"single"|"multi","direct_answer":"","plan_summary":"","success_criteria":"","collaborators":[{"role_name":"","prompt":"","parallel":true}]}'
+            'Respond ONLY with JSON: {"mode":"multi","plan_summary":"1 concise sentence","success_criteria":"verification checks","collaborators":[{"role_name":"","prompt":"","parallel":true}]}'
         )
-
         router_model = self.fast_router_model(self.supervisor_model)
-        ok, triage_raw, err, eff_coord, _ = self.run_agy(
-            "router",
-            "Router",
-            triage_prompt,
-            router_model,
-        )
+        ok, triage_raw, err, eff_coord, _ = self.run_agy("router", "Coordinator Plan", triage_prompt, router_model)
         if not ok:
-            emit("task_error", message=err or ("Không thể phân tích yêu cầu." if self.is_vi() else "Failed to analyze request."))
+            emit("task_error", message=err or ("Không thể lập kế hoạch." if self.is_vi() else "Failed to plan."))
             return
 
         triage = extract_json_block(triage_raw) or {}
-        mode = str(triage.get("mode") or "single").lower()
-
-        if mode == "direct" and triage.get("direct_answer"):
-            ans = str(triage["direct_answer"]).strip()
-            self.logger.write("Triage -> direct.", "\033[1;36m")
-            emit("assistant_message", model=eff_coord, title="Trả lời trực tiếp" if self.is_vi() else "Direct Response", text=ans)
-            emit("task_complete", progress=100, summary=ans)
-            self.logger.write("DIRECT RESPONSE COMPLETED.", "\033[1;32m")
-            return
-
-        if mode == "multi" and triage.get("collaborators"):
+        if triage.get("collaborators"):
             self.run_multi_agent(user_task, triage, eff_coord)
-            return
-
-        plan_summary = str(triage.get("plan_summary") or "").strip() or (
-            "Đang xử lý yêu cầu trong một phiên hợp nhất..." if self.is_vi() else "Executing in single unified session..."
-        )
-        self.logger.write(f"Triage -> single fast lane: {plan_summary}", "\033[1;36m")
-        self.run_single_fast(user_task, plan_summary)
+        else:
+            self.run_single_fast(user_task, str(triage.get("plan_summary") or user_task))
 
 
 def main():

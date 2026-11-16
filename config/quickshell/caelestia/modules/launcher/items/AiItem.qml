@@ -18,7 +18,7 @@ Item {
     function onClicked(): void {
         root.list.screenState.launcher = false;
         if (root.prompt.length > 0) {
-            AiAutomationService.runTask(root.prompt);
+            AiAutomationService.runTask(root.prompt, true);
         } else {
             Quickshell.execDetached(["qs", "-c", "caelestia", "ipc", "call", "ai", "openMonitor"]);
         }

@@ -68,7 +68,7 @@ Item {
                 const taskPrompt = text.startsWith(`${aiPrefix} `) ? text.slice(`${aiPrefix} `.length).trim() : "";
                 root.screenState.launcher = false;
                 if (taskPrompt.length > 0)
-                    AiAutomationService.runTask(taskPrompt);
+                    AiAutomationService.runTask(taskPrompt, true);
                 else
                     Quickshell.execDetached(["qs", "-c", "caelestia", "ipc", "call", "ai", "openMonitor"]);
                 return;

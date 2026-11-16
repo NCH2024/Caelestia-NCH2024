@@ -81,28 +81,59 @@ def get_cursor_pos() -> tuple[int, int]:
         return -1, -1
 
 
-def calibrated_move(tx: int, ty: int):
-    """Closed-loop move so pointer lands cleanly within a few pixels of logical (tx, ty)."""
+def notify_hud(x: int, y: int, action: str, label: str = "", clicked: bool = False):
+    """Fire-and-forget 120Hz visual AI ghost cursor & ripple update in Quickshell."""
+    try:
+        subprocess.Popen(
+            [
+                "qs", "-c", "caelestia", "ipc", "call", "ai", "cursorEvent",
+                str(int(x)), str(int(y)), str(action), str(label), "1" if clicked else "0",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        pass
+
+
+def calibrated_move(tx: int, ty: int, action_label: str = "Moving cursor"):
+    """Smooth human-like eased move + closed-loop pointer calibration within a few pixels."""
     ensure_ydotool()
     w, h, _ = get_monitor_info()
     tx = max(0, min(w - 1, int(tx)))
     ty = max(0, min(h - 1, int(ty)))
 
-    # Initial move using calibrated 0.5 factor observed on Wayland ydotool 1.0
+    sx, sy = get_cursor_pos()
+    if sx < 0 or sy < 0:
+        sx, sy = w // 2, h // 2
+
+    notify_hud(tx, ty, "move", action_label, False)
+
+    # Smooth eased steps (cubic-out) so the physical cursor glides naturally like a human hand
+    dist = ((tx - sx) ** 2 + (ty - sy) ** 2) ** 0.5
+    steps = max(4, min(14, int(dist / 90))) if dist > 20 else 1
     scale_x, scale_y = 0.5, 0.5
-    run(["ydotool", "mousemove", "--absolute", "-x", str(round(tx * scale_x)), "-y", str(round(ty * scale_y))])
-    time.sleep(0.08)
+    for step in range(1, steps + 1):
+        u = step / steps
+        eased = 1.0 - (1.0 - u) ** 3
+        ix = round(sx + (tx - sx) * eased)
+        iy = round(sy + (ty - sy) * eased)
+        run(["ydotool", "mousemove", "--absolute", "-x", str(round(ix * scale_x)), "-y", str(round(iy * scale_y))])
+        if step < steps:
+            time.sleep(0.012)
+
+    time.sleep(0.05)
     ax, ay = get_cursor_pos()
     if ax < 0 or (abs(ax - tx) <= 4 and abs(ay - ty) <= 4):
         return ax, ay
 
-    # Adjust dynamically using measured ratio if different from 0.5
     if ax > 20 and tx > 20:
         scale_x = scale_x * (tx / ax)
     if ay > 20 and ty > 20:
         scale_y = scale_y * (ty / ay)
     run(["ydotool", "mousemove", "--absolute", "-x", str(round(tx * scale_x)), "-y", str(round(ty * scale_y))])
-    time.sleep(0.08)
+    time.sleep(0.05)
     return get_cursor_pos()
 
 
@@ -240,12 +271,14 @@ def cmd_launch(args):
 
 
 def cmd_move(args):
-    ax, ay = calibrated_move(args.x, args.y)
+    ax, ay = calibrated_move(args.x, args.y, f"Di chuyển ({args.x}, {args.y})")
     print(json.dumps({"ok": True, "target": [args.x, args.y], "actual": [ax, ay]}))
 
 
 def cmd_click(args):
-    ax, ay = calibrated_move(args.x, args.y)
+    lbl = "Double Click" if args.double else ("Right Click" if args.button == "right" else "Click")
+    ax, ay = calibrated_move(args.x, args.y, lbl)
+    notify_hud(ax if ax >= 0 else args.x, ay if ay >= 0 else args.y, "click", lbl, True)
     code = BUTTON_CODES[args.button]
     if args.double:
         run(["ydotool", "click", "--repeat", "2", "--next-delay", "60", code])
@@ -256,13 +289,19 @@ def cmd_click(args):
 
 def cmd_scroll(args):
     if args.x is not None and args.y is not None:
-        calibrated_move(args.x, args.y)
+        calibrated_move(args.x, args.y, "Cuộn trang")
+    else:
+        cx, cy = get_cursor_pos()
+        notify_hud(cx, cy, "scroll", "Cuộn trang", False)
     run(["ydotool", "mousemove", "-w", "-x", "0", "-y", str(args.delta)])
     print(json.dumps({"ok": True, "delta": args.delta}))
 
 
 def cmd_type(args):
     ensure_ydotool()
+    cx, cy = get_cursor_pos()
+    preview = args.text[:24] + ("..." if len(args.text) > 24 else "")
+    notify_hud(cx, cy, "type", f"Nhập: {preview}", False)
     text = args.text
     is_ascii = all(32 <= ord(ch) <= 126 for ch in text)
     if is_ascii and len(text) <= 80 and not args.paste:
@@ -281,6 +320,8 @@ def cmd_type(args):
 
 
 def cmd_key(args):
+    cx, cy = get_cursor_pos()
+    notify_hud(cx, cy, "key", f"Phím: {args.combo}", False)
     press_combo(args.combo)
     print(json.dumps({"ok": True, "combo": args.combo}))
 

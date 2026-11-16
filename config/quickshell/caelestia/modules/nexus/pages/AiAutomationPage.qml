@@ -493,10 +493,20 @@ PageBase {
 
         ToggleRow {
             text: "Allow Desktop, App Launch & Human-like Input"
-            subtext: "Allow Agents to open GUI apps (hyprctl/gtk-launch), inspect screenshots (grim) & control windows"
+            subtext: "Allow AI to open GUI apps, inspect screenshots (grim) & control cursor smoothly"
             checked: AiAutomationService.allowDesktopActions
             onToggled: {
                 AiAutomationService.allowDesktopActions = checked;
+                AiAutomationService.saveConfig();
+            }
+        }
+
+        ToggleRow {
+            text: "Show Live AI Ghost Cursor & Click Ripples"
+            subtext: "Render animated pointer cursor & click ripples on screen during desktop automation"
+            checked: AiAutomationService.showGhostCursor
+            onToggled: {
+                AiAutomationService.showGhostCursor = checked;
                 AiAutomationService.saveConfig();
             }
         }
