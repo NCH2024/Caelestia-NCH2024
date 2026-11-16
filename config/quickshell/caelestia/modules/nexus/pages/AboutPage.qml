@@ -1,10 +1,12 @@
 import QtQuick
 import QtQuick.Layouts
+import Quickshell
 import Quickshell.Io
 import Caelestia
 import Caelestia.Config
 import Caelestia.I18n
 import qs.components
+import qs.components.effects
 import qs.services
 import qs.utils
 import qs.modules.nexus.common
@@ -61,22 +63,50 @@ PageBase {
                 width: parent.width - Tokens.padding.largeIncreased * 2
                 spacing: Tokens.spacing.small
 
-                AnimatedLogo {
+                RowLayout {
                     Layout.alignment: Qt.AlignHCenter
-                    Layout.preferredWidth: implicitWidth
-                    Layout.preferredHeight: implicitHeight
+                    spacing: Tokens.spacing.large
+
+                    AnimatedLogo {
+                        Layout.alignment: Qt.AlignVCenter
+                        Layout.preferredWidth: implicitWidth
+                        Layout.preferredHeight: implicitHeight
+                    }
+
+                    StyledText {
+                        Layout.alignment: Qt.AlignVCenter
+                        text: "×"
+                        font: Tokens.font.headline.medium
+                        color: Colours.palette.m3outline
+                    }
+
+                    Image {
+                        Layout.alignment: Qt.AlignVCenter
+                        Layout.preferredWidth: 112
+                        Layout.preferredHeight: 112
+                        source: Quickshell.shellPath("assets/meow-logo.png")
+                        fillMode: Image.PreserveAspectFit
+                        smooth: true
+                        mipmap: true
+
+                        layer.enabled: true
+                        layer.effect: Colouriser {
+                            sourceColor: "black"
+                            colorizationColor: Colours.palette.m3onSurface
+                        }
+                    }
                 }
 
                 StyledText {
                     Layout.alignment: Qt.AlignHCenter
                     Layout.topMargin: Tokens.spacing.small
-                    text: "Caelestia"
+                    text: "Caelestia × Meow"
                     font: Tokens.font.headline.builders.large.width(110).build()
                 }
 
                 StyledText {
                     Layout.alignment: Qt.AlignHCenter
-                    text: CUtils.version ? `v${CUtils.version}` : "…"
+                    text: CUtils.version ? `Base v${CUtils.version} • Meow Remake` : "Meow Remake"
                     color: Colours.palette.m3onSurfaceVariant
                     font: Tokens.font.body.medium
                 }
@@ -102,14 +132,14 @@ PageBase {
                         spacing: Tokens.spacing.small
 
                         MaterialIcon {
-                            text: "auto_awesome"
+                            text: "pets"
                             fontStyle: Tokens.font.icon.small
                             color: Colours.palette.m3primary
                             fill: 1
                         }
 
                         StyledText {
-                            text: "Caelestia × NCH2024"
+                            text: "Remade by Meow"
                             font: Tokens.font.label.large
                             color: Colours.palette.m3onSecondaryContainer
                         }
@@ -133,7 +163,13 @@ PageBase {
             first: true
             icon: "merge_type"
             label: "Edition"
-            value: "Caelestia × NCH2024 Remake"
+            value: "Caelestia × Meow Remake"
+        }
+
+        InfoRow {
+            icon: "pets"
+            label: "Creator"
+            value: "Meow"
         }
 
         InfoRow {
@@ -146,7 +182,7 @@ PageBase {
             last: true
             icon: "code"
             trailingIcon: "open_in_new"
-            text: "GitHub: NCH2024"
+            text: "Meow on GitHub (@NCH2024)"
             subtext: "https://github.com/NCH2024"
             onClicked: Qt.openUrlExternally("https://github.com/NCH2024")
         }

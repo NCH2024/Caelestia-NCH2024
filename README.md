@@ -1,8 +1,8 @@
-# Caelestia × NCH2024 Remake
+# Caelestia × Meow Remake
 
 A heavily customized, hardware-aware remake of **Caelestia Shell** (`Quickshell` + `Hyprland`) with a unified **Nexus Control Center**, **Top-Hover Smart Optimization Dashboard**, **Adaptive Thermal & Fan Control**, **CachyOS `sched-ext` Integration**, **10-Band PipeWire Studio Equalizer**, and a matching **SDDM Login Theme**.
 
-Maintained by **[NCH2024](https://github.com/NCH2024)** on top of upstream Caelestia.
+Remade & maintained by **Meow** ([GitHub @NCH2024](https://github.com/NCH2024)) on top of upstream Caelestia.
 
 ---
 
@@ -21,7 +21,7 @@ Maintained by **[NCH2024](https://github.com/NCH2024)** on top of upstream Caele
    - **Power, Fans & Care:** `scx_loader` (`EEVDF`, `LAVD`, `Bpfland`, `Cosmos`, `Rusty`), NVMe I/O scheduler (`kyber`, `none`, `mq-deadline`, `adios`), CPU Turbo Boost toggle, idle/DPMS/sleep timeouts, Dual-GPU live readout, and manual CPU/GPU Fan Boost sliders.
    - **Studio 10-Band Equalizer:** Runs PipeWire filter-chain stably as a user systemd unit (`caelestia-eq.service`) with presets & instant sink switching.
    - **Seamless Updates & Hardware Drivers:** Non-blocking GUI progress bar (`pkexec` + `TaskRunner`) with expandable terminal logs only when requested.
-   - **About Page (`Caelestia × NCH2024`):** Features both the animated Caelestia emblem and clickable **NCH2024** GitHub attribution.
+   - **About Page (`Caelestia × Meow`):** Features both the animated Caelestia emblem and the custom **Meow** logo side-by-side (`meow-logo.png`), with clickable GitHub attribution (`@NCH2024`).
 4. **Unified SDDM Theme & Clean Logout**
    - Matching Caelestia SDDM greeter theme (`sddm-theme/caelestia`) and reliable Hyprland session exit (`hyprctl dispatch exit`).
 
