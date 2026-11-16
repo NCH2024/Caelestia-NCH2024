@@ -132,12 +132,26 @@ Scope {
             return screenState[drawer] ? "1" : "0";
         }
 
+        function openDashboardTab(tabIdx: int): void {
+            if (root.hasFullscreen)
+                return;
+            const screenState = ShellState.forActive();
+            screenState.dashboardTab = tabIdx;
+            screenState.dashboard = true;
+        }
+
         target: "drawers"
     }
 
     IpcHandler {
         function open(): void {
             WindowFactory.create();
+        }
+
+        function openPage(pageIdx: int): void {
+            WindowFactory.create(null, {
+                initialPageIdx: pageIdx
+            });
         }
 
         target: "nexus"

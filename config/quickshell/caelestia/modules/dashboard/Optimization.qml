@@ -144,7 +144,7 @@ Item {
 
                             StyledText {
                                 Layout.fillWidth: true
-                                text: `Memory: ${OptimizerService.ramFreeText} (${OptimizerService.ramPct}% used)`
+                                text: `RAM: ${OptimizerService.ramFreeText} (${OptimizerService.ramPct}% used)`
                                 font: Tokens.font.body.small
                                 color: Colours.palette.m3onSurfaceVariant
                                 elide: Text.ElideRight
@@ -161,8 +161,8 @@ Item {
                             StyledText {
                                 Layout.fillWidth: true
                                 text: OptimizerService.lastOptimizedTime.length > 0
-                                    ? `Last boosted at ${OptimizerService.lastOptimizedTime} • ${OptimizerService.optimizeStatusText}`
-                                    : "Frees unused memory & clears temporary files safely"
+                                    ? `Last boosted at ${OptimizerService.lastOptimizedTime}`
+                                    : "Frees unused RAM & temporary files safely"
                                 font: Tokens.font.label.small
                                 color: Colours.palette.m3outline
                                 elide: Text.ElideRight
