@@ -28,7 +28,7 @@ Variants {
         anchors.top: true
         anchors.left: true
         anchors.right: true
-        implicitHeight: 96
+        implicitHeight: 160
 
         color: "transparent"
 
@@ -38,13 +38,13 @@ Variants {
 
         readonly property color badgeColor: {
             if (st === "listening")
-                return "#06B6D4"; // Bright Cyan - Listening
+                return "#06B6D4";
             if (st === "thinking")
-                return "#8B5CF6"; // Violet - Recognizing / Executing
+                return "#8B5CF6";
             if (st === "speaking")
-                return "#10B981"; // Emerald - Speaking reply
+                return "#10B981";
             if (st === "error")
-                return "#EF4444"; // Red - Missed speech
+                return "#EF4444";
             return Colours.palette.m3primary;
         }
 
@@ -76,11 +76,12 @@ Variants {
             id: pill
 
             anchors.horizontalCenter: parent.horizontalCenter
-            y: win.isActive ? 18 : -64
+            y: win.isActive ? 18 : -84
             opacity: win.isActive ? 1.0 : 0.0
-            width: Math.min(540, Math.max(290, contentRow.implicitWidth + 36))
-            height: 54
-            radius: 27
+            clip: true
+            width: Math.min(620, Math.max(320, contentCol.implicitWidth + 82))
+            height: Math.max(54, contentCol.implicitHeight + 22)
+            radius: Math.min(28, height / 2)
             color: Colours.tPalette.m3surfaceContainerHigh
             border.width: 2
             border.color: win.badgeColor
@@ -97,13 +98,24 @@ Variants {
                     easing.type: Easing.OutQuad
                 }
             }
+            Behavior on height {
+                NumberAnimation {
+                    duration: 160
+                    easing.type: Easing.OutCubic
+                }
+            }
 
             RowLayout {
                 id: contentRow
-                anchors.centerIn: parent
+                anchors.fill: parent
+                anchors.leftMargin: 16
+                anchors.rightMargin: 18
+                anchors.topMargin: 10
+                anchors.bottomMargin: 10
                 spacing: 12
 
                 Item {
+                    Layout.alignment: Qt.AlignVCenter
                     implicitWidth: 34
                     implicitHeight: 34
 
@@ -142,10 +154,13 @@ Variants {
                 }
 
                 ColumnLayout {
-                    spacing: 1
-                    Layout.maximumWidth: 440
+                    id: contentCol
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 520
+                    spacing: 2
 
                     StyledText {
+                        Layout.fillWidth: true
                         text: win.titleText
                         font: Tokens.font.label.large
                         color: Colours.palette.m3onSurface
@@ -153,10 +168,13 @@ Variants {
                     }
 
                     StyledText {
+                        Layout.fillWidth: true
                         visible: AiAutomationService.voiceStatusText.length > 0 && win.st !== "listening"
                         text: AiAutomationService.voiceStatusText
                         font: Tokens.font.label.small
                         color: win.badgeColor
+                        wrapMode: Text.WordWrap
+                        maximumLineCount: 4
                         elide: Text.ElideRight
                     }
                 }

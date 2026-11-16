@@ -261,15 +261,20 @@ Singleton {
     function speakText(msg: string): void {
         if (!voiceVenvInstalled || !voiceReplyEnabled)
             return;
-        const clean = String(msg ?? "").trim();
+        let clean = String(msg ?? "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/https?:\/\/\S+|file:\/\/\S+/g, "").replace(/[`*_#>\[\]\(\)•]+/g, " ").replace(/\s+/g, " ").trim();
         if (!clean)
             return;
+        if (clean.length > 1400) {
+            const sub = clean.slice(0, 1400);
+            const idx = Math.max(sub.lastIndexOf(". "), sub.lastIndexOf("! "), sub.lastIndexOf("? "));
+            clean = idx > 400 ? sub.slice(0, idx + 1).trim() : sub.trim();
+        }
         const vName = root.chatLanguage === "en" ? "en-US-AriaNeural" : "vi-VN-HoaiMyNeural";
         ttsProc.command = [
             root.voicePythonBin,
             Quickshell.shellPath("scripts/caelestia_voice.py"),
             "speak",
-            clean.slice(0, 450),
+            clean,
             "--voice", vName
         ];
         ttsProc.running = false;

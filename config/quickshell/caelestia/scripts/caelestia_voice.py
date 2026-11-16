@@ -79,13 +79,36 @@ def ac_rms(pcm_i16: np.ndarray) -> float:
     return float(np.sqrt(np.mean(x * x))) if len(x) else 0.0
 
 
+def normalize_for_asr(pcm_i16: np.ndarray, target_rms: float = 0.14, max_gain: float = 28.0) -> np.ndarray:
+    """Automatic Gain Control (AGC) so quiet laptop DMICs sound clear & loud like a handheld phone."""
+    x = clean_ac_float(pcm_i16)
+    if len(x) == 0:
+        return x
+    rms = float(np.sqrt(np.mean(x * x)))
+    if rms < 0.0012:
+        return x
+    gain = min(max_gain, max(1.0, target_rms / rms))
+    return np.tanh(x * gain * 1.1).astype(np.float32)
+
+
+def _log_dbg(msg: str):
+    try:
+        lp = Path("/tmp/caelestia_voice.log")
+        if lp.exists() and lp.stat().st_size > 24000:
+            lp.write_text("", encoding="utf-8")
+        with lp.open("a", encoding="utf-8") as fh:
+            fh.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
+
+
 def mic_stream_cmd(sr: int = 16000) -> list[str]:
-    """Use ffmpeg pulse + 85Hz highpass (eliminates PipeWire raw DMIC s32 DC jitter); fallback parec --raw."""
+    """Use ffmpeg pulse + speech band filter (85-7600Hz) to strip laptop hum & DC offset cleanly."""
     if shutil.which("ffmpeg"):
         return [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-f", "pulse", "-i", "default",
-            "-af", "highpass=f=85",
+            "-af", "highpass=f=85,lowpass=f=7600",
             "-ac", "1", "-ar", str(sr), "-f", "s16le", "-",
         ]
     return ["parec", "--raw", "--format=s16le", f"--rate={sr}", "--channels=1"]
@@ -239,11 +262,24 @@ async def _edge_tts_async(text: str, voice: str, out_mp3: Path):
     await comm.save(str(out_mp3))
 
 
+def _clip_sentences(text: str, limit: int = 1400) -> str:
+    if len(text) <= limit:
+        return text
+    sub = text[:limit]
+    best = max(sub.rfind(". "), sub.rfind("! "), sub.rfind("? "), sub.rfind(".\n"))
+    if best >= int(limit * 0.4):
+        return sub[: best + 1].strip()
+    sp = sub.rfind(" ")
+    return (sub[:sp] if sp > 0 else sub).strip()
+
+
 def speak_text(text: str, voice: str = "vi-VN-HoaiMyNeural"):
-    """Speak concise Vietnamese/English response cleanly via gTTS/edge-tts + ffplay (offline fallback: espeak-ng)."""
-    clean = re.sub(r"[`*_#>\[\]\(\)]+", " ", text or "")
+    """Speak complete Vietnamese/English response cleanly without cutting sentences mid-word."""
+    clean = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text or "")
     clean = re.sub(r"https?://\S+|file://\S+", "", clean)
-    clean = re.sub(r"\s+", " ", clean).strip()[:450]
+    clean = re.sub(r"[`*_#>\[\]\(\)•]+", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    clean = _clip_sentences(clean, 1400)
     if not clean:
         return
     ipc_voice_state("speaking", clean)
@@ -279,12 +315,21 @@ def speak_text(text: str, voice: str = "vi-VN-HoaiMyNeural"):
         subprocess.run(["espeak-ng", "-v", tts_lang, clean], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def transcribe_pcm(pcm_i16: np.ndarray, model_size: str = "base", lang: str = "vi") -> str:
+def transcribe_pcm(
+    pcm_i16: np.ndarray,
+    model_size: str = "base",
+    lang: str = "vi",
+    vad_filter: bool = True,
+    initial_prompt: str | None = None,
+) -> str:
     if len(pcm_i16) < 3200:
         return ""
     model = get_whisper_model(model_size)
-    audio_f32 = clean_ac_float(pcm_i16)
-    segs, _ = model.transcribe(audio_f32, language=lang, beam_size=1, vad_filter=True)
+    audio_f32 = normalize_for_asr(pcm_i16)
+    kwargs = {"language": lang, "beam_size": 1, "vad_filter": vad_filter}
+    if initial_prompt:
+        kwargs["initial_prompt"] = initial_prompt
+    segs, _ = model.transcribe(audio_f32, **kwargs)
     return " ".join(s.text.strip() for s in segs).strip()
 
 
@@ -294,8 +339,8 @@ def cmd_train(args):
     time.sleep(0.15)
     pcm = record_pcm_chunk(2.4)
     rms = ac_rms(pcm)
-    if rms < 0.005:
-        print(json.dumps({"ok": False, "error": "Microphone audio too quiet; please speak 'Mi Mi' closer to mic."}))
+    if rms < 0.002:
+        print(json.dumps({"ok": False, "error": "Microphone audio too quiet; please speak 'Mi Mi' clearly."}))
         sys.exit(1)
     vp = compute_mel_voiceprint(pcm)
     prof = load_profile()
@@ -330,8 +375,8 @@ def cmd_listen_once(args):
     print(json.dumps({"ok": True, "text": txt}, ensure_ascii=False))
 
 
-def record_spoken_utterance(max_sec: float = 8.5, sr: int = 16000, vad_thr: float = 0.018) -> np.ndarray:
-    """Stream clean high-passed mic audio until 1.1s trailing silence after speech starts."""
+def record_spoken_utterance(max_sec: float = 8.5, sr: int = 16000, vad_thr: float = 0.004) -> np.ndarray:
+    """Stream high-sensitive laptop DMIC audio until 1.2s trailing silence after speech starts."""
     chunk_bytes = int(0.18 * sr * 2)  # 180ms frames
     proc = subprocess.Popen(mic_stream_cmd(sr), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     frames = []
@@ -353,7 +398,7 @@ def record_spoken_utterance(max_sec: float = 8.5, sr: int = 16000, vad_thr: floa
                 silent_chunks = 0
             elif started:
                 silent_chunks += 1
-                if silent_chunks >= 6 and (time.time() - t0) >= 0.8:
+                if silent_chunks >= 7 and (time.time() - t0) >= 0.9:
                     break
     finally:
         proc.terminate()
@@ -365,7 +410,7 @@ def record_spoken_utterance(max_sec: float = 8.5, sr: int = 16000, vad_thr: floa
 
 
 def cmd_daemon(args):
-    """Always-on low-CPU listener waiting for 'Mi Mi / Hey Mi Mi / Hello Mi Mi' with clear visual/audio wake feedback."""
+    """High-sensitivity always-on laptop DMIC wake listener for 'Mi Mi / Hey Mi Mi / Hello Mi Mi'."""
     running = True
 
     def stop_handler(*_):
@@ -375,17 +420,21 @@ def cmd_daemon(args):
     signal.signal(signal.SIGTERM, stop_handler)
     signal.signal(signal.SIGINT, stop_handler)
 
-    # Pre-warm tiny wake model before going ready so first wake detection is instantaneous
     get_whisper_model("tiny")
     sr = 16000
     chunk_bytes = int(0.25 * sr * 2)
     cmd = mic_stream_cmd(sr)
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     ring = []
-    baseline_samples = []
-    vad_thr = 0.020
+    baseline_rms = []
+    baseline_pk = []
+    ambient = 0.0020
+    ambient_pk = 0.015
+    vad_thr = 0.0042
+    peak_thr = 0.032
     cooldown_until = 0.0
     ipc_voice_state("ready", "Mi Mi sẵn sàng — hãy gọi 'Mi Mi'")
+    _log_dbg("Daemon started & warmed up.")
 
     try:
         while running:
@@ -397,19 +446,33 @@ def cmd_daemon(args):
             if len(arr) == 0:
                 continue
             ring.append(arr)
-            if len(ring) > 7:  # ~1.75s rolling window
+            if len(ring) > 8:  # ~2.0s rolling window
                 ring.pop(0)
-            rms = ac_rms(arr)
-            if len(baseline_samples) < 4:
-                baseline_samples.append(rms)
-                if len(baseline_samples) == 4:
-                    ambient = float(np.median(baseline_samples))
-                    vad_thr = max(0.015, min(0.055, ambient * 2.1))
-                continue
-            if rms < vad_thr or time.time() < cooldown_until or len(ring) < 3:
+            ac = clean_ac_float(arr)
+            rms = float(np.sqrt(np.mean(ac * ac)))
+            pk = float(np.max(np.abs(ac)))
+
+            if len(baseline_rms) < 4:
+                baseline_rms.append(rms)
+                baseline_pk.append(pk)
+                if len(baseline_rms) == 4:
+                    ambient = max(0.0008, float(np.median(baseline_rms)))
+                    ambient_pk = max(0.008, float(np.median(baseline_pk)))
+                    vad_thr = max(0.0032, min(0.025, ambient * 2.2))
+                    peak_thr = max(0.020, min(0.12, ambient_pk * 2.4))
+                    _log_dbg(f"Calibrated ambient={ambient:.5f} vad_thr={vad_thr:.5f} peak_thr={peak_thr:.5f}")
                 continue
 
-            window_pcm = np.concatenate(ring[-6:])
+            if rms < vad_thr and pk < peak_thr:
+                # Slowly adapt ambient baseline during genuine silence
+                ambient = 0.94 * ambient + 0.06 * rms
+                vad_thr = max(0.0032, min(0.025, ambient * 2.2))
+                continue
+
+            if time.time() < cooldown_until or len(ring) < 3:
+                continue
+
+            window_pcm = np.concatenate(ring[-7:])
             prof = load_profile()
             samples = prof.get("samples") or []
             if samples:
@@ -418,15 +481,31 @@ def cmd_daemon(args):
                 if best_sim < float(prof.get("threshold", DEFAULT_THRESHOLD)):
                     continue
 
-            phrase = transcribe_pcm(window_pcm, model_size="tiny", lang="en")
-            matched = matches_wake(phrase)
+            phrase_vi = transcribe_pcm(
+                window_pcm,
+                model_size="tiny",
+                lang="vi",
+                vad_filter=False,
+                initial_prompt="Mi Mi, Hey Mi Mi, Hello Mi Mi, Mì Mì.",
+            )
+            matched = matches_wake(phrase_vi)
+            phrase_en = ""
             if not matched:
-                phrase_vi = transcribe_pcm(window_pcm, model_size="tiny", lang="vi")
-                matched = matches_wake(phrase_vi)
+                phrase_en = transcribe_pcm(
+                    window_pcm,
+                    model_size="tiny",
+                    lang="en",
+                    vad_filter=False,
+                    initial_prompt="Mi Mi, Hey Mi Mi, Hello Mi Mi.",
+                )
+                matched = matches_wake(phrase_en)
+            _log_dbg(f"Trig rms={rms:.4f} pk={pk:.4f} vi={phrase_vi!r} en={phrase_en!r} match={matched}")
             if not matched:
+                # Throttle repeated triggers on non-wake chatter slightly
+                cooldown_until = time.time() + 0.4
                 continue
 
-            # Wake word detected! Unmistakable audio chime + glowing top screen pill immediately!
+            # Wake word detected! Instant chime + glowing top HUD pill
             proc.terminate()
             try:
                 proc.wait(timeout=1.0)
@@ -435,10 +514,11 @@ def cmd_daemon(args):
             ring.clear()
             play_chime(async_play=True)
             ipc_voice_state("listening", "Mi Mi đã thức — Đang nghe lệnh...")
-            cmd_pcm = record_spoken_utterance(max_sec=8.5, vad_thr=vad_thr * 0.9)
+            cmd_pcm = record_spoken_utterance(max_sec=8.5, vad_thr=max(0.0030, ambient * 1.8))
             ipc_voice_state("thinking", "Đang hiểu lệnh...")
-            raw_spoken = transcribe_pcm(cmd_pcm, model_size=args.model, lang=args.lang)
+            raw_spoken = transcribe_pcm(cmd_pcm, model_size=args.model, lang=args.lang, vad_filter=False)
             spoken = strip_wake_prefix(raw_spoken)
+            _log_dbg(f"Spoken raw={raw_spoken!r} -> clean={spoken!r}")
             if spoken:
                 ipc_voice_state("thinking", f"Đã nghe: «{spoken[:72]}»")
                 subprocess.Popen(

@@ -716,11 +716,16 @@ class Orchestrator:
             )
         else:
             desktop_rule = "Desktop GUI control (`caelestia-desktop`) is ALLOWED."
+        voice_rule = (
+            "\nVOICE ASSISTANT MODE: Keep `final_reply` natural and concise for spoken audio (2-4 complete sentences, NO markdown bullets/tables/URLs, finish every sentence cleanly)."
+            if self.voice_mode
+            else ""
+        )
         exec_prompt = (
             "You are Meow AI executing a user request in ONE efficient session.\n"
             "Use your preloaded AGENTS.md system cheatsheet directly — DO NOT waste turns exploring config files when IPC commands are already known.\n"
             "Combine independent commands in one shell call where practical, execute cleanly, verify the final state once, and return structured JSON.\n"
-            f"{desktop_rule}\n{self.language_instruction()}\n\n"
+            f"{desktop_rule}\n{self.language_instruction()}{voice_rule}\n\n"
             f"USER REQUEST:\n{user_task}\n\n"
             "Respond ONLY with valid JSON:\n"
             "{\n"
