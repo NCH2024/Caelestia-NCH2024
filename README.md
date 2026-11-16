@@ -32,6 +32,7 @@
   - Detects installed/recommended GPU & CPU microcode drivers (`chwd -a`), checks UEFI/device firmware (`fwupdmgr`), ranks CachyOS mirrors, and cleans orphan packages.
 - **Modes & Automated If/Then Routines (`Modes & Routines`)**
   - Built-in usage profiles (**Balanced**, **Gaming & Turbo**, **Work & Focus**, **Developer**, **Cinema & Media**, **Night & Battery Saver**) that synchronize Power, Cooling, Equalizer, Game Mode, DND, and Night Light.
+  - **Adaptive Solid UI:** Entering **Game Mode** or **Battery Saver** automatically switches panels to a crisp opaque surface (disabling blur and transparency) and restores your glass theme when switching back.
   - Automatic triggers based on **time schedule**, **running app/game process**, or **Wi-Fi SSID**.
 - **10-Band PipeWire Studio Equalizer (`Audio & Studio Equalizer`)**
   - Runs stably as a user `systemd-run` PipeWire filter chain (`caelestia-eq.service`) with 10 presets (*Cinema Surround*, *Bass Boost*, *Rock*, *Vocal*, *Gaming*, etc.), volume overdrive (`up to 150%`), channel balance, and mic noise cancellation.
@@ -80,9 +81,16 @@ One-click system profiles (**Balanced**, **Gaming & Turbo**, **Work & Focus**, *
 ---
 
 ### Live Auto-Trigger Demo: Steam → Automatic Gaming Boost
-When **Steam** (or `gamescope` / `cs2` / `dota2`) launches on any workspace (e.g. Workspace 3), the enabled **If/Then Process Routine** detects it automatically and switches the left taskbar icon, **Gaming & Turbo** mode, and **Max Speed** profile on without manual input — keeping the Ryzen CPU cool at `56°C`.
+When **Steam** (or `gamescope` / `cs2` / `dota2`) launches on any workspace (e.g. Workspace 3), the enabled **If/Then Process Routine** automatically activates **Gaming & Turbo** and **Max Speed** — and switches panels to a **solid, opaque, zero-blur Material 3 surface** so overlays stay crisp and readable over any game or bright store art.
 
 ![Auto Gaming Mode on Steam Launch](assets/screenshots/steam-auto-boost.png)
+
+---
+
+### Quick Settings & System Controls
+Instant bottom-right control drawer synchronized 1:1 with Modes, Power Profiles, Studio EQ presets, Game Mode (`FPS Boost`), Keep Awake, Night Light, audio sliders, and Screen Recorder.
+
+![Quick Settings Panel](assets/screenshots/quick-settings.png)
 
 ---
 

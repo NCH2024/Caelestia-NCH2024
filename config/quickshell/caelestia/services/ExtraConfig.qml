@@ -404,6 +404,9 @@ Singleton {
         }
     }
 
+    property bool _sleepSolidOverride: false
+    property bool _sleepSavedTransparency: true
+
     function activateMode(modeId: string): void {
         const m = root.modes.find(item => item.id === modeId);
         if (!m)
@@ -417,7 +420,28 @@ Singleton {
         if (m.thermalMode)
             root.setThermalMode(String(m.thermalMode));
 
-        GameMode.enabled = Boolean(m.gameMode);
+        const wantGameMode = Boolean(m.gameMode);
+        const wantSolidBattery = (m.id === "sleep");
+
+        if (wantGameMode) {
+            root._sleepSolidOverride = false;
+            GameMode.enabled = true;
+        } else {
+            GameMode.enabled = false;
+            if (wantSolidBattery) {
+                if (!root._sleepSolidOverride) {
+                    root._sleepSavedTransparency = GlobalConfig.appearance.transparency.enabled;
+                    root._sleepSolidOverride = true;
+                }
+                GlobalConfig.appearance.transparency.enabled = false;
+                root.applyHyprKeyword("decoration:blur:enabled", "false");
+            } else if (root._sleepSolidOverride) {
+                GlobalConfig.appearance.transparency.enabled = root._sleepSavedTransparency;
+                root._sleepSolidOverride = false;
+                root.applyHyprKeyword("decoration:blur:enabled", root.blurEnabled ? "true" : "false");
+            }
+        }
+
         Notifs.dnd = Boolean(m.dnd);
         IdleInhibitor.enabled = Boolean(m.keepAwake);
         applyNightLight(Boolean(m.nightLight), Number(m.nightLightTemp) || 4500);
