@@ -42,6 +42,12 @@ def detect_apps() -> dict[str, list[str]]:
     found = {}
     for k, bins in categories.items():
         found[k] = [b for b in bins if shutil.which(b)]
+    if shutil.which("flatpak"):
+        fp = subprocess.run(["flatpak", "info", "org.libreoffice.LibreOffice"], capture_output=True)
+        if fp.returncode == 0:
+            found["office_gui"].append("org.libreoffice.LibreOffice (Flatpak)")
+    if (Path.home() / ".local/bin/linoffice/linoffice.sh").exists():
+        found["office_gui"].append("LinOffice MS Word (~/.local/bin/linoffice/linoffice.sh)")
     return found
 
 

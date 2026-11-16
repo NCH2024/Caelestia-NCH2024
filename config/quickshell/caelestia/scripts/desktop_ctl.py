@@ -641,7 +641,7 @@ def cmd_yt_play(args):
 
 
 def detect_office_app() -> tuple[str | None, list[str] | None, bool]:
-    """Return (binary_name, launch_cmd, is_word_processor) prioritized for OS-compatible Word/Office apps."""
+    """Return (app_name, launch_cmd, is_word_processor) including native, Flatpak LibreOffice, and LinOffice Word."""
     import shutil
     candidates = [
         ("lowriter", ["lowriter", "--nologo", "--norestore"], True),
@@ -649,10 +649,20 @@ def detect_office_app() -> tuple[str | None, list[str] | None, bool]:
         ("onlyoffice-desktopeditors", ["onlyoffice-desktopeditors"], True),
         ("wps", ["wps"], True),
         ("abiword", ["abiword"], True),
-        ("kate", ["kate", "--new"], False),
-        ("code", ["code", "--new-window"], False),
     ]
     for name, cmd, is_wp in candidates:
+        if shutil.which(name):
+            return name, cmd, is_wp
+    # Check Flatpak LibreOffice (user or system)
+    if shutil.which("flatpak"):
+        fp = run(["flatpak", "info", "org.libreoffice.LibreOffice"])
+        if fp.returncode == 0:
+            return "libreoffice-flatpak", ["flatpak", "run", "org.libreoffice.LibreOffice", "--writer", "--nologo", "--norestore"], True
+    # Check LinOffice (containerized Microsoft Word)
+    linoffice_sh = Path.home() / ".local/bin/linoffice/linoffice.sh"
+    if linoffice_sh.exists():
+        return "linoffice-word", [str(linoffice_sh), "word"], True
+    for name, cmd, is_wp in [("kate", ["kate", "--new"], False), ("code", ["code", "--new-window"], False)]:
         if shutil.which(name):
             return name, cmd, is_wp
     return None, None, False
@@ -855,10 +865,8 @@ def cmd_web_copy(args):
         fc = find_client("firefox")
         cx = int(fc["at"][0] + fc["size"][0] / 2) if fc else w // 2
         cy = int(fc["at"][1] + fc["size"][1] / 2) if fc else h // 2
-        calibrated_move(cx, cy, "Chuyển chế độ đọc sạch", args.agent)
-        # Try Firefox Reader View (Ctrl+Alt+R); harmless no-op on pages that don't support it
-        press_combo("ctrl+alt+r")
-        time.sleep(0.8)
+        calibrated_move(cx, cy, "Đọc & cuộn trang", args.agent)
+        # NOTE: Never press Ctrl+Alt+R (Hyprland global shortcut for `caelestia record` screen recording!)
         for _ in range(max(1, args.scrolls)):
             notify_hud(cx, cy, "scroll", "Cuộn trang đọc bài", False, args.agent)
             run(["ydotool", "mousemove", "-w", "-x", "0", "-y", "-5"])
