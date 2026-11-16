@@ -355,7 +355,7 @@ PageBase {
 
         ToggleRow {
             text: "Smart Cool Balanced Tuning"
-            subtext: "Use balance_power EPP (3.4 GHz cap) & gentle airflow above 61°C in Balanced mode"
+            subtext: "Use balance_power EPP (3.4 GHz cap) & active fan cooling above 48°C in Balanced mode"
             checked: OptimizerService.smartCoolEnabled
             onToggled: {
                 OptimizerService.smartCoolEnabled = checked;
@@ -417,7 +417,7 @@ PageBase {
 
                     StyledText {
                         Layout.fillWidth: true
-                        text: `Active Power Profile: ${ExtraConfig.powerProfileName}`
+                        text: `Active Power Profile: ${OptimizerService.powerProfileName}`
                         font: Tokens.font.body.builders.small.weight(Font.Medium).build()
                     }
 
@@ -441,7 +441,7 @@ PageBase {
 
                         delegate: StyledRect {
                             required property var modelData
-                            readonly property bool active: ExtraConfig.powerProfileId === modelData.id
+                            readonly property bool active: OptimizerService.powerProfileId === modelData.id
 
                             Layout.fillWidth: true
                             implicitHeight: 40
@@ -450,7 +450,7 @@ PageBase {
 
                             StateLayer {
                                 radius: parent.radius
-                                onClicked: ExtraConfig.setPowerProfile(modelData.id)
+                                onClicked: OptimizerService.setPowerProfile(modelData.id)
                             }
 
                             RowLayout {

@@ -185,6 +185,7 @@ Singleton {
             setPowerProfile("power-saver");
             setThermalMode("power-saver");
             setScxScheduler("bpfland", "PowerSave");
+            ExtraConfig.syncModeFromPreset("sleep");
         } else if (preset === "gaming") {
             _autoCoolLevel = 0;
             setPowerProfile("performance");
@@ -192,10 +193,12 @@ Singleton {
                 setCpuTurbo(true);
             setThermalMode("performance");
             setScxScheduler("lavd", "Gaming");
+            ExtraConfig.syncModeFromPreset("gaming");
         } else {
             setPowerProfile("balanced");
             setThermalMode("balanced");
-            setScxScheduler("lavd", "Auto");
+            setScxScheduler(preferredScxSched || "cosmos", preferredScxMode || "Auto");
+            ExtraConfig.syncModeFromPreset("standard");
         }
     }
 
@@ -443,17 +446,17 @@ Singleton {
             root.topProcesses = telemetryProc._procsBuf.slice();
             root._recomputeHealth();
 
-            // Adaptive Smart Cooling for Balanced Mode (prevents hot idle fans=0 RPM chassis)
+            // Adaptive Smart Cooling for Balanced Mode (keeps fans spinning gently whenever warm, never silent 0 RPM above 48°C)
             if (root.smartCoolEnabled && root.thermalProfile === "balanced" && root.cpuFanBoost === 0 && root.gpuFanBoost === 0 && !coolProc.running) {
                 const peak = Math.max(root.cpuTemp, root.gpuTemp);
                 let targetLevel = root._autoCoolLevel;
-                if (peak >= 74)
-                    targetLevel = 2;
-                else if (peak >= 61)
-                    targetLevel = Math.max(targetLevel, 1);
-                else if (root._autoCoolLevel === 2 && peak <= 66)
-                    targetLevel = 1;
-                else if (peak <= 53)
+                if (peak >= 72)
+                    targetLevel = 3;
+                else if (peak >= 60)
+                    targetLevel = root._autoCoolLevel === 3 && peak > 65 ? 3 : Math.max(targetLevel, 2);
+                else if (peak >= 48)
+                    targetLevel = root._autoCoolLevel >= 2 && peak > 54 ? targetLevel : Math.max(targetLevel, 1);
+                else if (peak <= 43)
                     targetLevel = 0;
 
                 if (targetLevel !== root._autoCoolLevel) {

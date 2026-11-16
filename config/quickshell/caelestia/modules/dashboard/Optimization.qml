@@ -493,7 +493,7 @@ Item {
 
                             StyledText {
                                 text: OptimizerService.smartCoolEnabled
-                                    ? (OptimizerService._autoCoolLevel > 0 ? "Gentle cooling active now" : "Reduces heat spikes automatically")
+                                    ? (OptimizerService._autoCoolLevel > 0 ? `Active fan cooling (Level ${OptimizerService._autoCoolLevel})` : "Fans cool actively above 48°C")
                                     : "Standard stock laptop profile"
                                 font: Tokens.font.label.small
                                 color: OptimizerService._autoCoolLevel > 0 ? Colours.palette.m3primary : Colours.palette.m3outline

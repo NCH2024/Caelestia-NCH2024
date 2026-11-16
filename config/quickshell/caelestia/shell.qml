@@ -33,6 +33,7 @@ ShellRoot {
     Background {}
     Drawers {}
     AiCursorOverlay {}
+    AiVoiceOverlay {}
     AreaPicker {}
     Lock {
         id: lock

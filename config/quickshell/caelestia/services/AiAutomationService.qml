@@ -49,10 +49,12 @@ Singleton {
     // Voice assistant ("Mi Mi") & Self-Learning Knowledge Base runtime states
     readonly property string voicePythonBin: `${Quickshell.env("HOME")}/.local/share/caelestia/voice-venv/bin/python`
     property bool voiceVenvInstalled: false
-    property string voiceState: "off" // "off" | "ready" | "listening" | "thinking" | "speaking"
+    readonly property bool voiceDaemonRunning: voiceDaemonProc.running
+    property string voiceState: "off" // "off" | "ready" | "listening" | "thinking" | "speaking" | "error" | "idle"
     property string voiceStatusText: ""
     property int voiceSampleCount: 0
     property bool voiceTrainingBusy: false
+    property bool _resumeVoiceDaemonAfterCapture: false
     property bool _nextRunFromVoice: false
     property bool _activeRunWasVoice: false
     property int learnedRecipeCount: 0
@@ -227,6 +229,9 @@ Singleton {
         if (!voiceVenvInstalled || voiceTrainingBusy)
             return;
         voiceTrainingBusy = true;
+        _resumeVoiceDaemonAfterCapture = voiceWakeEnabled;
+        if (voiceDaemonProc.running)
+            voiceDaemonProc.running = false;
         voiceStatusText = trChat("Hãy nói 'Mi Mi' trong 2 giây...", "Say 'Mi Mi' clearly...");
         voiceTrainProc.running = true;
     }
@@ -234,6 +239,9 @@ Singleton {
     function listenVoiceOnce(): void {
         if (!voiceVenvInstalled)
             return;
+        _resumeVoiceDaemonAfterCapture = voiceWakeEnabled;
+        if (voiceDaemonProc.running)
+            voiceDaemonProc.running = false;
         voiceListenProc.command = [
             root.voicePythonBin,
             Quickshell.shellPath("scripts/caelestia_voice.py"),
@@ -283,9 +291,9 @@ Singleton {
     }
 
     function syncVoiceDaemon(): void {
-        if (!loaded)
+        if (!loaded || !voiceVenvInstalled)
             return;
-        if (voiceWakeEnabled && voiceVenvInstalled) {
+        if (voiceWakeEnabled && !voiceTrainingBusy && !voiceListenProc.running) {
             voiceDaemonProc.command = [
                 root.voicePythonBin,
                 Quickshell.shellPath("scripts/caelestia_voice.py"),
@@ -295,17 +303,18 @@ Singleton {
             ];
             if (!voiceDaemonProc.running)
                 voiceDaemonProc.running = true;
-        } else {
+        } else if (!voiceWakeEnabled) {
+            voiceDaemonRestartTimer.stop();
             if (voiceDaemonProc.running)
                 voiceDaemonProc.running = false;
-            if (!voiceWakeEnabled) {
-                voiceState = "off";
-                voiceStatusText = "";
-            }
+            voiceState = "off";
+            voiceStatusText = "";
         }
     }
 
-    onVoiceWakeEnabledChanged: syncVoiceDaemon()
+    onLoadedChanged: Qt.callLater(() => root.syncVoiceDaemon())
+    onVoiceVenvInstalledChanged: Qt.callLater(() => root.syncVoiceDaemon())
+    onVoiceWakeEnabledChanged: Qt.callLater(() => root.syncVoiceDaemon())
     onVoiceModelChanged: {
         if (voiceDaemonProc.running) {
             voiceDaemonProc.running = false;
@@ -805,6 +814,8 @@ Singleton {
             refreshKnowledge();
             if (root.voiceReplyEnabled && root.voiceVenvInstalled && (root._activeRunWasVoice || root.voiceWakeEnabled))
                 root.speakText(String(ev.summary || ""));
+            else if (root.voiceState === "thinking" || root.voiceState === "listening")
+                root.voiceState = root.voiceWakeEnabled ? "ready" : "off";
             root._activeRunWasVoice = false;
             if (compactRunActive)
                 miniHudAutoHideTimer.restart();
@@ -818,6 +829,8 @@ Singleton {
             phaseDetail = ev.message || trChat("Tác vụ gặp lỗi.", "Task failed.");
             running = false;
             root._activeRunWasVoice = false;
+            if (root.voiceState === "thinking" || root.voiceState === "listening")
+                root.voiceState = root.voiceWakeEnabled ? "ready" : "off";
             _taskEndedAt = Date.now();
             _cursorLingerMs = 900;
             if ((root.activeCursors || []).length > 0)
@@ -1018,11 +1031,25 @@ Singleton {
                 } catch (e) {}
             }
         }
-        onExited: root.voiceTrainingBusy = false
+        onExited: {
+            root.voiceTrainingBusy = false;
+            if (root._resumeVoiceDaemonAfterCapture) {
+                root._resumeVoiceDaemonAfterCapture = false;
+                Qt.callLater(() => root.syncVoiceDaemon());
+            }
+        }
     }
 
     Process {
         id: voiceListenProc
+        onExited: {
+            if (root._resumeVoiceDaemonAfterCapture) {
+                root._resumeVoiceDaemonAfterCapture = false;
+                Qt.callLater(() => root.syncVoiceDaemon());
+            } else if (!root.voiceWakeEnabled && root.voiceState !== "speaking") {
+                root.voiceState = "off";
+            }
+        }
     }
 
     Process {
@@ -1034,12 +1061,39 @@ Singleton {
         }
     }
 
+    Timer {
+        id: voiceDaemonRestartTimer
+        interval: 2200
+        repeat: false
+        onTriggered: root.syncVoiceDaemon()
+    }
+
     Process {
         id: voiceDaemonProc
+        stderr: SplitParser {
+            onRead: data => {
+                const s = data.trim();
+                if (s)
+                    console.warn("Voice Daemon:", s);
+            }
+        }
+        onExited: exitCode => {
+            if (root.voiceWakeEnabled && !root.voiceTrainingBusy && !voiceListenProc.running) {
+                root.voiceState = "error";
+                root.voiceStatusText = `Voice daemon restarted (exit ${exitCode})`;
+                voiceDaemonRestartTimer.restart();
+            } else if (!root.voiceWakeEnabled) {
+                root.voiceState = "off";
+            }
+        }
     }
 
     Process {
         id: ttsProc
+        onExited: {
+            if (root.voiceState === "speaking")
+                root.voiceState = root.voiceWakeEnabled ? "ready" : "off";
+        }
     }
 
     Process {

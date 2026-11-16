@@ -121,6 +121,52 @@ set_dell_pwm() {
 cmd="${1:-}"
 shift || true
 
+read_peak_temp_c() {
+    local best=0 t h name
+    for h in /sys/class/hwmon/hwmon*; do
+        [[ -r "$h/name" ]] || continue
+        name=$(<"$h/name")
+        if [[ "$name" == "k10temp" || "$name" == "coretemp" || "$name" == "alienware_wmi" || "$name" == "dell_smm" ]]; then
+            if [[ -r "$h/temp1_input" ]]; then
+                t=$(( $(<"$h/temp1_input") / 1000 ))
+                (( t > best )) && best="$t"
+            fi
+        fi
+    done
+    echo "$best"
+}
+
+apply_auto_cool_level() {
+    local level="${1:-0}"
+    local dsmm
+    dsmm=$(find_hwmon "dell_smm" || true)
+    [[ -n "$dsmm" ]] || return 0
+    case "$level" in
+        0)
+            echo 2 > "$dsmm/pwm1_enable" 2>/dev/null || true
+            echo 2 > "$dsmm/pwm2_enable" 2>/dev/null || true
+            ;;
+        1)
+            echo 1 > "$dsmm/pwm1_enable" 2>/dev/null || true
+            echo 1 > "$dsmm/pwm2_enable" 2>/dev/null || true
+            echo 58 > "$dsmm/pwm1" 2>/dev/null || true
+            echo 58 > "$dsmm/pwm2" 2>/dev/null || true
+            ;;
+        2)
+            echo 1 > "$dsmm/pwm1_enable" 2>/dev/null || true
+            echo 1 > "$dsmm/pwm2_enable" 2>/dev/null || true
+            echo 95 > "$dsmm/pwm1" 2>/dev/null || true
+            echo 95 > "$dsmm/pwm2" 2>/dev/null || true
+            ;;
+        3)
+            echo 1 > "$dsmm/pwm1_enable" 2>/dev/null || true
+            echo 1 > "$dsmm/pwm2_enable" 2>/dev/null || true
+            echo 145 > "$dsmm/pwm1" 2>/dev/null || true
+            echo 145 > "$dsmm/pwm2" 2>/dev/null || true
+            ;;
+    esac
+}
+
 case "$cmd" in
     thermal)
         mode="${1:-balanced}"
@@ -134,10 +180,20 @@ case "$cmd" in
                 sleep 0.15
                 if [[ "$cool_flag" == "1" ]]; then
                     apply_cpu_tuning "balanced-cool"
+                    pk=$(read_peak_temp_c)
+                    if (( pk >= 72 )); then
+                        apply_auto_cool_level 3
+                    elif (( pk >= 60 )); then
+                        apply_auto_cool_level 2
+                    elif (( pk >= 48 )); then
+                        apply_auto_cool_level 1
+                    else
+                        set_dell_pwm 0 0
+                    fi
                 else
                     apply_cpu_tuning "balanced"
+                    set_dell_pwm 0 0
                 fi
-                set_dell_pwm 0 0
                 ;;
             performance)
                 powerprofilesctl set performance 2>/dev/null || true
@@ -193,27 +249,7 @@ case "$cmd" in
 
     auto-cool)
         level="${1:-0}"
-        dsmm=$(find_hwmon "dell_smm" || true)
-        if [[ -n "$dsmm" ]]; then
-            case "$level" in
-                0)
-                    echo 2 > "$dsmm/pwm1_enable" 2>/dev/null || true
-                    echo 2 > "$dsmm/pwm2_enable" 2>/dev/null || true
-                    ;;
-                1)
-                    echo 1 > "$dsmm/pwm1_enable" 2>/dev/null || true
-                    echo 1 > "$dsmm/pwm2_enable" 2>/dev/null || true
-                    echo 45 > "$dsmm/pwm1" 2>/dev/null || true
-                    echo 45 > "$dsmm/pwm2" 2>/dev/null || true
-                    ;;
-                2)
-                    echo 1 > "$dsmm/pwm1_enable" 2>/dev/null || true
-                    echo 1 > "$dsmm/pwm2_enable" 2>/dev/null || true
-                    echo 62 > "$dsmm/pwm1" 2>/dev/null || true
-                    echo 52 > "$dsmm/pwm2" 2>/dev/null || true
-                    ;;
-            esac
-        fi
+        apply_auto_cool_level "$level"
         echo "OK|auto_cool=$level"
         ;;
 

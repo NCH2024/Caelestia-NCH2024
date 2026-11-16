@@ -560,9 +560,11 @@ PageBase {
             text: "Always-On Wake Word ('Mi Mi' / 'Hey Mi Mi')"
             subtext: !AiAutomationService.voiceVenvInstalled
                 ? "Voice runtime missing (~/.local/share/caelestia/voice-venv)"
-                : (AiAutomationService.voiceStatusText
-                    ? `State: ${AiAutomationService.voiceState} — ${AiAutomationService.voiceStatusText}`
-                    : `Continuous low-CPU PipeWire listener (${AiAutomationService.voiceState})`)
+                : (AiAutomationService.voiceDaemonRunning
+                    ? `LIVE (${AiAutomationService.voiceState}) — ${AiAutomationService.voiceStatusText || "Say 'Mi Mi' to wake"}`
+                    : (AiAutomationService.voiceWakeEnabled
+                        ? `Starting listener... (${AiAutomationService.voiceState})`
+                        : "Off — toggle on to listen continuously for 'Mi Mi'"))
             checked: AiAutomationService.voiceWakeEnabled
             onToggled: {
                 AiAutomationService.voiceWakeEnabled = checked;

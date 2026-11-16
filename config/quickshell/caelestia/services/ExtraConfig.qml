@@ -65,12 +65,7 @@ Singleton {
     }
 
     function setPowerProfile(prof: string): void {
-        if (prof === "performance")
-            PowerProfiles.profile = PowerProfile.Performance;
-        else if (prof === "power-saver" || prof === "powersave")
-            PowerProfiles.profile = PowerProfile.PowerSaver;
-        else
-            PowerProfiles.profile = PowerProfile.Balanced;
+        OptimizerService.setPowerProfile(prof);
     }
 
     function cyclePowerProfile(): void {
@@ -453,6 +448,35 @@ Singleton {
 
     property bool _sleepSolidOverride: false
     property bool _sleepSavedTransparency: true
+
+    function syncModeFromPreset(modeId: string): void {
+        const m = root.modes.find(item => item.id === modeId);
+        if (!m)
+            return;
+        root.activeModeId = m.id;
+        root.activeModeIcon = m.icon;
+        const wantGameMode = Boolean(m.gameMode);
+        const wantSolidBattery = (m.id === "sleep");
+        if (wantGameMode) {
+            root._sleepSolidOverride = false;
+            GameMode.enabled = true;
+        } else {
+            GameMode.enabled = false;
+            if (wantSolidBattery) {
+                if (!root._sleepSolidOverride) {
+                    root._sleepSavedTransparency = GlobalConfig.appearance.transparency.enabled;
+                    root._sleepSolidOverride = true;
+                }
+                GlobalConfig.appearance.transparency.enabled = false;
+                root.applyHyprKeyword("decoration:blur:enabled", "false");
+            } else if (root._sleepSolidOverride) {
+                GlobalConfig.appearance.transparency.enabled = root._sleepSavedTransparency;
+                root._sleepSolidOverride = false;
+                root.applyHyprKeyword("decoration:blur:enabled", root.blurEnabled ? "true" : "false");
+            }
+        }
+        save();
+    }
 
     function activateMode(modeId: string): void {
         const m = root.modes.find(item => item.id === modeId);
