@@ -24,6 +24,7 @@ Singleton {
     property bool enabled: true
     property string supervisorModel: "gemini-4-hydrogen-high"
     property string workerModel: "gemini-4-argon-high"
+    property string chatLanguage: "vi" // "vi" | "en" | "auto"
     property bool autoSwitchOnQuota: true
     property var fallbackModels: [
         "gemini-4-hydrogen-high",
@@ -34,7 +35,7 @@ Singleton {
         "gpt-oss-120b-medium"
     ]
     property bool fullPermissions: true
-    property bool openWorkerTerminal: true
+    property bool openWorkerTerminal: false // Hidden by default; live progress renders in Chat
     property bool allowDesktopActions: true
     property bool askOnInvalidResult: true
 
@@ -42,10 +43,12 @@ Singleton {
     property bool loaded: false
     property bool running: false
     property string currentPhase: "idle" // "idle" | "planning" | "working" | "verifying" | "waiting_user" | "done" | "error"
+    property int currentProgress: 0 // 0..100
     property string phaseDetail: ""
     property string currentLogPath: ""
     property string streamingWorkerText: ""
     property string streamingWorkerModel: ""
+    property var liveSteps: [] // Live tool steps shown inside the chat progress card
     property string activeSupervisorModel: supervisorModel
     property string activeWorkerModel: workerModel
     property bool hasPendingQuestion: false
@@ -55,6 +58,14 @@ Singleton {
     property string pendingLauncherText: ""
 
     signal monitorRequested()
+
+    function isVi(): bool {
+        return chatLanguage === "vi";
+    }
+
+    function trChat(viStr: string, enStr: string): string {
+        return isVi() ? viStr : enStr;
+    }
 
     function nowStamp(): string {
         const d = new Date();
@@ -80,10 +91,12 @@ Singleton {
         if (running)
             return;
         chatMessages = [];
+        liveSteps = [];
         streamingWorkerText = "";
         hasPendingQuestion = false;
         pendingQuestion = null;
         currentPhase = "idle";
+        currentProgress = 0;
         phaseDetail = "";
     }
 
@@ -122,11 +135,10 @@ Singleton {
     function toggleFallbackModel(modelId: string): void {
         const list = (fallbackModels || []).slice();
         const idx = list.indexOf(modelId);
-        if (idx >= 0) {
+        if (idx >= 0)
             list.splice(idx, 1);
-        } else {
+        else
             list.push(modelId);
-        }
         fallbackModels = list;
         saveConfig();
     }
@@ -152,7 +164,7 @@ Singleton {
         Quickshell.execDetached([
             "foot",
             "--app-id", "caelestia-ai-terminal",
-            "-T", "AI Agent Terminal — Live Execution",
+            "-T", "Meow AI — Execution Log",
             "-e", "bash", "-c",
             `touch '${currentLogPath}' && tail -n +1 -F '${currentLogPath}'`
         ]);
@@ -163,21 +175,34 @@ Singleton {
         if (!clean)
             return;
 
-        monitorRequested();
-
-        if (!cliInstalled) {
-            appendMessage("system", "CLI Missing", "Antigravity CLI (agy) was not found. Please install and log in under Settings -> AI Automation.", "");
-            currentPhase = "error";
-            phaseDetail = "agy binary not found";
-            return;
-        }
-
         if (running) {
+            monitorRequested();
             if (hasPendingQuestion) {
                 sendReply("retry", clean);
             } else {
-                appendMessage("system", "Busy", "An AI task is already running. Stop it first or reply when prompted.", "");
+                appendMessage(
+                    "system",
+                    trChat("Đang bận", "Busy"),
+                    trChat("Một tác vụ AI khác đang chạy. Hãy dừng tác vụ hiện tại trước hoặc đợi hoàn tất.", "An AI task is already running. Stop it first or wait for completion."),
+                    ""
+                );
             }
+            return;
+        }
+
+        // Refresh chat screen cleanly for every new user request
+        clearChat();
+        monitorRequested();
+
+        if (!cliInstalled) {
+            appendMessage(
+                "system",
+                trChat("Thiếu CLI", "CLI Missing"),
+                trChat("Không tìm thấy Antigravity CLI (agy). Vui lòng cài đặt và đăng nhập trong Settings -> AI Automation.", "Antigravity CLI (agy) was not found. Please install and sign in under Settings -> AI Automation."),
+                ""
+            );
+            currentPhase = "error";
+            phaseDetail = "agy binary not found";
             return;
         }
 
@@ -185,7 +210,8 @@ Singleton {
         currentLogPath = logFile;
         running = true;
         currentPhase = "planning";
-        phaseDetail = "Initializing Agent A (Supervisor) -> Agent B (Worker)...";
+        currentProgress = 10;
+        phaseDetail = trChat("Đang khởi tạo trợ lý AI...", "Initializing AI assistant...");
         streamingWorkerText = "";
         streamingWorkerModel = workerModel;
         activeSupervisorModel = supervisorModel;
@@ -193,11 +219,12 @@ Singleton {
         hasPendingQuestion = false;
         pendingQuestion = null;
 
-        appendMessage("user", "Task Request", clean, "");
+        appendMessage("user", trChat("Yêu cầu", "Request"), clean, "");
 
         const cfg = {
             supervisorModel: root.supervisorModel,
             workerModel: root.workerModel,
+            chatLanguage: root.chatLanguage,
             autoSwitchOnQuota: root.autoSwitchOnQuota,
             fallbackModels: root.fallbackModels,
             fullPermissions: root.fullPermissions,
@@ -224,13 +251,13 @@ Singleton {
             return;
         const clean = String(text ?? "").trim();
         if (clean.length > 0)
-            appendMessage("user", "User Reply", clean, "");
+            appendMessage("user", trChat("Phản hồi", "Reply"), clean, "");
         else if (action === "accept")
-            appendMessage("user", "Confirmation", "Accepted Agent B's result.", "");
+            appendMessage("user", trChat("Xác nhận", "Confirmation"), trChat("Chấp nhận kết quả hiện tại.", "Accepted current result."), "");
         else if (action === "retry")
-            appendMessage("user", "Confirmation", "Requested Agent B to retry with corrections.", "");
+            appendMessage("user", trChat("Xác nhận", "Confirmation"), trChat("Yêu cầu thực hiện lại để khắc phục.", "Requested retry with corrections."), "");
         else if (action === "abort")
-            appendMessage("user", "Confirmation", "Aborted task.", "");
+            appendMessage("user", trChat("Xác nhận", "Confirmation"), trChat("Đã hủy tác vụ.", "Aborted task."), "");
 
         hasPendingQuestion = false;
         pendingQuestion = null;
@@ -263,69 +290,86 @@ Singleton {
         const t = ev.type;
         if (t === "phase") {
             currentPhase = ev.phase || "working";
+            if (ev.progress !== undefined)
+                currentProgress = Number(ev.progress) || currentProgress;
             phaseDetail = ev.detail || "";
-        } else if (t === "agent_start") {
-            if (ev.role === "agent_a")
+        } else if (t === "engine_start") {
+            if (ev.role === "supervisor") {
                 activeSupervisorModel = ev.model || supervisorModel;
-            else {
+            } else {
                 activeWorkerModel = ev.model || workerModel;
                 streamingWorkerModel = activeWorkerModel;
                 streamingWorkerText = "";
+                const nextSteps = liveSteps.slice();
+                nextSteps.push({
+                    ts: nowStamp(),
+                    label: trChat(`Khởi chạy bộ thực thi (${activeWorkerModel})`, `Starting execution engine (${activeWorkerModel})`)
+                });
+                liveSteps = nextSteps;
             }
-        } else if (t === "agent_delta") {
-            if (ev.role === "agent_b" && ev.text)
+        } else if (t === "engine_delta") {
+            if (ev.role === "executor" && ev.text)
                 streamingWorkerText += ev.text;
-        } else if (t === "agent_tool") {
-            if (ev.role === "agent_b")
-                streamingWorkerText += `\n[Tool Step #${ev.step}] ${ev.detail}\n`;
+        } else if (t === "engine_step") {
+            const nextSteps = liveSteps.slice();
+            nextSteps.push({
+                ts: nowStamp(),
+                label: trChat(`Bước #${ev.step}: ${ev.detail}`, `Step #${ev.step}: ${ev.detail}`)
+            });
+            liveSteps = nextSteps;
         } else if (t === "model_switch") {
-            const msg = `Quota/rate limit reached on ${ev.fromModel}. Auto-switched ${ev.role === "agent_a" ? "Agent A" : "Agent B"} to ${ev.toModel}.`;
-            appendMessage("system", "Auto Model Switch", msg, ev.toModel);
+            const msg = trChat(
+                `Model ${ev.fromModel} đã hết hạn mức. Tự động chuyển sang ${ev.toModel}.`,
+                `Quota/rate limit reached on ${ev.fromModel}. Auto-switched to ${ev.toModel}.`
+            );
+            appendMessage("system", trChat("Tự động đổi Model", "Auto Model Switch"), msg, ev.toModel);
             Notifs.notify({
                 appName: "AI Automation",
-                summary: "Model Auto-Switched",
+                summary: trChat("Đã tự động đổi Model", "Model Auto-Switched"),
                 body: msg,
                 appIcon: "auto_awesome"
             });
-        } else if (t === "agent_message") {
-            if (ev.role === "agent_b")
-                streamingWorkerText = "";
-            appendMessage(ev.role || "agent_a", ev.title || "Update", ev.text || "", ev.model || "");
+        } else if (t === "assistant_message") {
+            appendMessage("assistant", ev.title || "Meow AI", ev.text || "", ev.model || "");
+        } else if (t === "execution_report") {
+            streamingWorkerText = "";
+            appendMessage("execution", ev.title || trChat("Chi tiết thực thi", "Execution Details"), ev.text || "", ev.model || "");
         } else if (t === "user_question") {
             streamingWorkerText = "";
             hasPendingQuestion = true;
             pendingQuestion = {
-                question: ev.question || "Agent A needs confirmation to proceed.",
+                question: ev.question || trChat("Cần xác nhận từ bạn để tiếp tục.", "Confirmation needed to proceed."),
                 verification: ev.verification || "",
                 suggestedFix: ev.suggestedFix || ""
             };
-            appendMessage("question", "Agent A Requires Confirmation", pendingQuestion.question, ev.model || "");
+            appendMessage("question", trChat("Cần bạn xác nhận", "Confirmation Needed"), pendingQuestion.question, ev.model || "");
             monitorRequested();
             Notifs.notify({
                 appName: "AI Automation",
-                summary: "Agent A Needs Confirmation",
+                summary: trChat("AI cần xác nhận của bạn", "AI Needs Confirmation"),
                 body: pendingQuestion.question,
                 appIcon: "help"
             });
         } else if (t === "task_complete") {
             currentPhase = "done";
-            phaseDetail = "Task verified & completed by Agent A.";
+            currentProgress = 100;
+            phaseDetail = trChat("Đã hoàn tất và kiểm chứng thành công.", "Verified & completed.");
             running = false;
             hasPendingQuestion = false;
             pendingQuestion = null;
             Notifs.notify({
                 appName: "AI Automation",
-                summary: "AI Task Completed",
-                body: String(ev.summary || "Completed successfully.").slice(0, 140),
+                summary: trChat("Hoàn tất tác vụ AI", "AI Task Completed"),
+                body: String(ev.summary || "Done.").slice(0, 140),
                 appIcon: "check_circle"
             });
         } else if (t === "task_error") {
             currentPhase = "error";
-            phaseDetail = ev.message || "Task failed.";
+            phaseDetail = ev.message || trChat("Tác vụ gặp lỗi.", "Task failed.");
             running = false;
             hasPendingQuestion = false;
             pendingQuestion = null;
-            appendMessage("system", "Task Stopped / Error", ev.message || "Unknown error.", "");
+            appendMessage("system", trChat("Thông báo", "Notice"), ev.message || "Unknown error.", "");
         }
     }
 
@@ -358,7 +402,7 @@ Singleton {
                 orchestratorProc.running = false;
             root.running = false;
             root.currentPhase = "error";
-            root.phaseDetail = "Stopped by user.";
+            root.phaseDetail = root.trChat("Đã dừng theo yêu cầu.", "Stopped by user.");
         }
     }
 
@@ -371,6 +415,7 @@ Singleton {
                 enabled: root.enabled,
                 supervisorModel: root.supervisorModel,
                 workerModel: root.workerModel,
+                chatLanguage: root.chatLanguage,
                 autoSwitchOnQuota: root.autoSwitchOnQuota,
                 fallbackModels: root.fallbackModels,
                 fullPermissions: root.fullPermissions,
@@ -401,7 +446,10 @@ Singleton {
                 root.running = false;
                 if (root.currentPhase !== "done" && root.currentPhase !== "error") {
                     root.currentPhase = exitCode === 0 ? "done" : "error";
-                    root.phaseDetail = exitCode === 0 ? "Completed." : `Orchestrator exited (${exitCode})`;
+                    root.currentProgress = exitCode === 0 ? 100 : root.currentProgress;
+                    root.phaseDetail = exitCode === 0
+                        ? root.trChat("Đã hoàn tất.", "Completed.")
+                        : `Orchestrator exited (${exitCode})`;
                 }
             }
         }
@@ -504,6 +552,8 @@ Singleton {
                     root.supervisorModel = String(d.supervisorModel);
                 if (d.workerModel)
                     root.workerModel = String(d.workerModel);
+                if (d.chatLanguage)
+                    root.chatLanguage = String(d.chatLanguage);
                 if (d.autoSwitchOnQuota !== undefined)
                     root.autoSwitchOnQuota = Boolean(d.autoSwitchOnQuota);
                 if (Array.isArray(d.fallbackModels) && d.fallbackModels.length > 0)

@@ -47,9 +47,9 @@
 - **Apple-Style Liquid Glass (`Wallpaper & style`):**
   - Compiled Qt6 GLSL Fresnel optical shader (`liquid_glass.frag.qsb`) applied globally across `StyledRect` cards and panels, paired with Hyprland multi-pass vibrancy blur (`size 16`, `passes 4`, `vibrancy 0.36`) for subtle curved specular rims and crystal-clear glass depth (automatically disabled for 0% overhead in Game Mode / Battery Saver).
 - **AI Task Automation (`AI Automation` + `SUPER + >`):**
-  - Deep **Antigravity CLI (`agy`)** integration in Nexus Settings: detects installation & login state (`agy`), lists all discovered models dynamically, supports interactive sign-in, and enables **automatic quota/rate-limit model failover**.
-  - **Dual-Agent Supervision (`Agent A <-> Agent B`):** **Agent A (Supervisor)** plans the task, spawns **Agent B (Worker)** in a live `foot` terminal with full autonomous & desktop-control permissions (`--dangerously-skip-permissions`, `hyprctl`, app launch, `grim`, `ydotool`), then audits Agent B's verified results against your request — pausing to ask for your confirmation inline inside the floating **AI Supervisor Monitor** chat window if anything looks wrong or incomplete.
-  - **Quick Launch (`SUPER + >` / `>ai `):** Jumps straight into AI prompt entry inside the Caelestia Launcher.
+  - Deep **Antigravity CLI (`agy`)** integration in Nexus Settings: detects installation & login state (`agy`), lists all discovered models dynamically, supports **Chat Language selection** (`Tiếng Việt`, `English`, `Auto`), and enables **automatic quota/rate-limit model failover**.
+  - **Coordinator & Execution Engine (`Meow AI`):** Plans the task, executes system & desktop automation silently in the background (`--dangerously-skip-permissions`, `hyprctl`, app launch, `grim`, `ydotool`) with live step progress streamed directly inside the floating **Meow AI Assistant** chat window (`fcitx5` Vietnamese IME enabled), then verifies results against your request and asks confirmation inline if anything needs review.
+  - **Quick Launch (`SUPER + >` / `>ai <command>`):** Jumps straight into AI prompt entry inside the Caelestia Launcher (every new request starts a fresh chat automatically).
 
 ---
 
@@ -125,24 +125,24 @@ Search all active Hyprland hotkeys or visually create custom shortcuts mapped to
 
 ---
 
-### AI Automation Settings (`Antigravity CLI` & Failover)
-Inspect `agy` installation & login state, scan all 18+ models, configure **Agent A (Supervisor)** and **Agent B (Worker)**, customize the quota-exhaustion fallback chain, and manage full-permission & desktop-control flags.
+### AI Automation Settings (`Antigravity CLI`, Language & Failover)
+Inspect `agy` installation & login state, switch **AI Chat & Response Language** (`Tiếng Việt` / `English` / `Auto`), scan all 18+ models, configure Coordinator & Execution models, customize quota-exhaustion fallback priority, and toggle optional background terminal visibility.
 
 ![AI Automation Settings](assets/screenshots/ai-settings.png)
 
 ---
 
-### Quick AI Task Prompt (`SUPER + >`)
-Press **`SUPER + >`** (or type `>ai ` in the Launcher) to enter a task directly from anywhere and dispatch **Agent A -> Agent B** immediately.
+### Quick AI Task Prompt (`SUPER + >` / `>ai <command>`)
+Press **`SUPER + >`** (or type `>ai <command>` in the Launcher with full `fcitx5` Vietnamese input support) to dispatch **Meow AI** directly from anywhere.
 
 ![Quick AI Launcher](assets/screenshots/ai-launcher.png)
 
 ---
 
-### AI Supervisor Monitor & Live Agent Terminal
-Side-by-side floating **AI Supervisor Monitor** chat window and live **Agent Terminal (`foot`)** showing Agent A's plan, Agent B's autonomous execution, verification audit results, and interactive confirmation prompts when intervention is needed.
+### Meow AI Assistant (Inline Live Progress & Chat)
+Floating **Meow AI Assistant** chat window with Liquid Glass optical rims, live inline execution steps & progress bar (no popup terminal clutter by default), Vietnamese/English localization, automatic chat refresh per new request, and interactive confirmation prompts when intervention is needed.
 
-![AI Supervisor Monitor and Live Terminal](assets/screenshots/ai-monitor.png)
+![Meow AI Assistant Live Progress](assets/screenshots/ai-monitor.png)
 
 ---
 

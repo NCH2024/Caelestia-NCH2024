@@ -16,6 +16,24 @@ PageBase {
 
     title: Tr.tr("AI Automation")
 
+    readonly property list<MenuItem> languageItems: [
+        MenuItem {
+            text: "Tiếng Việt (Vietnamese)"
+            icon: "translate"
+            readonly property string value: "vi"
+        },
+        MenuItem {
+            text: "English"
+            icon: "language"
+            readonly property string value: "en"
+        },
+        MenuItem {
+            text: "Auto (Match Prompt)"
+            icon: "auto_awesome"
+            readonly property string value: "auto"
+        }
+    ]
+
     ColumnLayout {
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.top: parent.top
@@ -151,7 +169,7 @@ PageBase {
 
                     IconTextButton {
                         icon: "forum"
-                        text: "Open Supervisor Chat"
+                        text: "Open Meow AI Chat"
                         type: IconTextButton.Filled
                         onClicked: AiWindowFactory.create()
                     }
@@ -170,15 +188,16 @@ PageBase {
                         anchors.leftMargin: Tokens.padding.medium
                         spacing: Tokens.spacing.small
 
-                        TextInput {
+                        TextFieldBase {
                             id: quickPrompt
                             Layout.fillWidth: true
                             Layout.alignment: Qt.AlignVCenter
-                            color: Colours.palette.m3onSurface
-                            font.family: Tokens.font.body.small.family
-                            font.pixelSize: Tokens.font.body.small.pixelSize
-                            selectByMouse: true
-                            clip: true
+                            background: Item {}
+                            leftPadding: 0
+                            rightPadding: Tokens.padding.small
+                            topPadding: 4
+                            bottomPadding: 4
+                            font: Tokens.font.body.small
 
                             onAccepted: {
                                 const t = quickPrompt.text.trim();
@@ -214,17 +233,29 @@ PageBase {
             }
         }
 
-        // Section: Models & Auto Quota Fallback
+        // Section: Language, Models & Auto Quota Fallback
         SectionHeader {
-            text: Tr.tr("Models & Quota Failover")
+            text: Tr.tr("Chat Language, Models & Failover")
+        }
+
+        SelectRow {
+            first: true
+            label: "AI Chat & Response Language"
+            subtext: "Language used for plans, step updates, verification summaries & confirmation prompts"
+            menuItems: root.languageItems
+            active: root.languageItems.find(i => i.value === AiAutomationService.chatLanguage) ?? root.languageItems[0]
+            onSelected: item => {
+                AiAutomationService.chatLanguage = item.value;
+                AiAutomationService.saveConfig();
+            }
         }
 
         DialogSelectButton {
             id: supModelBtn
             rootParent: root.flickable
-            icon: "supervisor_account"
-            label: `Agent A (Supervisor): ${AiAutomationService.supervisorModel}`
-            header: "Select Agent A (Supervisor) Model"
+            icon: "auto_awesome"
+            label: `Primary Coordinator Model: ${AiAutomationService.supervisorModel}`
+            header: "Select Primary Coordinator Model"
             acceptLabel: "Select"
             model: AiAutomationService.availableModels
             onAccepted: {
@@ -239,9 +270,9 @@ PageBase {
         DialogSelectButton {
             id: workModelBtn
             rootParent: root.flickable
-            icon: "smart_toy"
-            label: `Agent B (Worker): ${AiAutomationService.workerModel}`
-            header: "Select Agent B (Worker) Model"
+            icon: "memory"
+            label: `Task Execution Model: ${AiAutomationService.workerModel}`
+            header: "Select Task Execution Model"
             acceptLabel: "Select"
             model: AiAutomationService.availableModels
             onAccepted: {
@@ -254,7 +285,6 @@ PageBase {
         }
 
         ToggleRow {
-            first: true
             last: true
             text: "Auto-Switch Model When Quota Runs Out"
             subtext: "Automatically switch to the next fallback model on 429 / quota / rate-limit errors"
@@ -367,15 +397,15 @@ PageBase {
             }
         }
 
-        // Section: Permissions, Supervision & Desktop Control
+        // Section: Permissions, Verification & Desktop Control
         SectionHeader {
-            text: Tr.tr("Agent Supervision & Permissions")
+            text: Tr.tr("Execution Permissions & Progress Display")
         }
 
         ToggleRow {
             first: true
             text: "Full Autonomous Execution (--dangerously-skip-permissions)"
-            subtext: "Grant both Agent A and Agent B full non-interactive tool & command permissions"
+            subtext: "Grant full non-interactive tool & command permissions during automated tasks"
             checked: AiAutomationService.fullPermissions
             onToggled: {
                 AiAutomationService.fullPermissions = checked;
@@ -384,8 +414,8 @@ PageBase {
         }
 
         ToggleRow {
-            text: "Agent A Audits Result & Asks If Invalid"
-            subtext: "Compare Agent B output against your request; pause & ask you for confirmation if wrong or risky"
+            text: "Verify Result & Ask Confirmation If Invalid"
+            subtext: "Audit output against your request after execution and pause to ask you if incomplete or wrong"
             checked: AiAutomationService.askOnInvalidResult
             onToggled: {
                 AiAutomationService.askOnInvalidResult = checked;
@@ -394,8 +424,8 @@ PageBase {
         }
 
         ToggleRow {
-            text: "Open Live Worker Terminal (foot)"
-            subtext: "Spawn a live terminal window streaming Agent A -> Agent B commands and raw logs"
+            text: "Show Background Terminal Window (Optional)"
+            subtext: "When OFF, execution stays hidden and live steps stream directly inside the AI Chat window"
             checked: AiAutomationService.openWorkerTerminal
             onToggled: {
                 AiAutomationService.openWorkerTerminal = checked;

@@ -13,7 +13,7 @@ Singleton {
 
     function create(parent: Item, props: var): void {
         if (root.activeWindow) {
-            Quickshell.execDetached(["hyprctl", "dispatch", "focuswindow", "title:^(AI Automation — ).*"]);
+            Quickshell.execDetached(["hyprctl", "dispatch", "focuswindow", "title:^(Meow AI — ).*"]);
             return;
         }
         root.activeWindow = aiWinComp.createObject(parent ?? dummy, props ?? {});
@@ -61,7 +61,7 @@ Singleton {
             contentItem.Config.screen: screen.name
             contentItem.Tokens.screen: screen.name
 
-            title: "AI Automation — Supervisor Monitor"
+            title: "Meow AI — Task Assistant"
 
             AiChatWindow {
                 anchors.fill: parent

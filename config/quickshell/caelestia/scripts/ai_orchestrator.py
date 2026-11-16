@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
 """
-Caelestia AI Task Automation Orchestrator (Agent A Supervisor <-> Agent B Worker).
+Caelestia AI Task Automation Orchestrator.
 
-Communicates with Quickshell via line-delimited JSON (NDJSON) over stdin/stdout,
-while mirroring human-readable ANSI logs to a live log file tailed by foot terminal.
+Runs a two-stage Coordinator -> Execution Engine loop using Antigravity CLI (`agy`)
+with automatic quota/rate-limit model failover and live NDJSON progress events for QML UI.
 """
 
 import json
 import os
 import queue
 import re
-import select
-import shlex
-import signal
 import subprocess
 import sys
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -45,7 +41,7 @@ class SessionLogger:
         Path(log_path).parent.mkdir(parents=True, exist_ok=True)
         with open(self.log_path, "w", encoding="utf-8") as f:
             f.write(
-                f"\033[1;36m=== Caelestia AI Automation — Agent A <-> Agent B Live Terminal ===\033[0m\n"
+                f"\033[1;36m=== Caelestia AI Automation — Execution Log ===\033[0m\n"
                 f"\033[2mStarted at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\033[0m\n\n"
             )
 
@@ -65,19 +61,16 @@ def extract_json_block(text: str):
     if not text:
         return None
     text = text.strip()
-    # Try direct parse
     try:
         return json.loads(text)
     except Exception:
         pass
-    # Try fenced json block
     m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if m:
         try:
             return json.loads(m.group(1))
         except Exception:
             pass
-    # Try outermost braces
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end > start:
@@ -106,6 +99,7 @@ class Orchestrator:
         self.full_perms = bool(config.get("fullPermissions", True))
         self.allow_desktop = bool(config.get("allowDesktopActions", True))
         self.ask_on_invalid = bool(config.get("askOnInvalidResult", True))
+        self.chat_language = str(config.get("chatLanguage", "vi") or "vi").lower()
         self.cwd = config.get("cwd") or os.path.expanduser("~")
         self.ydotool_active = self._check_ydotool()
 
@@ -120,6 +114,27 @@ class Orchestrator:
             return res.returncode == 0
         except Exception:
             return False
+
+    def is_vi(self) -> bool:
+        return self.chat_language == "vi"
+
+    def language_instruction(self) -> str:
+        if self.chat_language == "vi":
+            return (
+                "LANGUAGE REQUIREMENT (STRICT): You MUST write ALL user-facing explanations, summaries, "
+                "verification notes, and confirmation questions in clear, natural Vietnamese (Tiếng Việt). "
+                "Do NOT refer to yourself as 'Agent A' or 'Agent B'; speak naturally as a unified AI assistant."
+            )
+        elif self.chat_language == "en":
+            return (
+                "LANGUAGE REQUIREMENT (STRICT): Write ALL user-facing explanations, summaries, "
+                "verification notes, and confirmation questions in clear, concise English. "
+                "Do NOT refer to yourself as 'Agent A' or 'Agent B'; speak naturally as a unified AI assistant."
+            )
+        return (
+            "LANGUAGE REQUIREMENT: Match the exact language of the USER REQUEST for all summaries, "
+            "verification notes, and confirmation questions. Do NOT expose 'Agent A' or 'Agent B' labels."
+        )
 
     def start_stdin_reader(self):
         def reader():
@@ -186,10 +201,6 @@ class Orchestrator:
         model: str,
         stream_to_ui: bool = False,
     ) -> tuple[bool, str, str, str]:
-        """
-        Run `agy -p` with stream-json and automatic quota failover.
-        Returns: (ok, response_text, error_text, effective_model)
-        """
         tried = set()
         current_model = model
 
@@ -207,15 +218,15 @@ class Orchestrator:
             if self.full_perms:
                 cmd.append("--dangerously-skip-permissions")
 
-            role_label = "Agent A (Supervisor)" if role == "agent_a" else "Agent B (Worker)"
-            role_color = "\033[1;35m" if role == "agent_a" else "\033[1;32m"
+            role_label = "Coordinator" if role == "supervisor" else "Execution Engine"
+            role_color = "\033[1;35m" if role == "supervisor" else "\033[1;32m"
             self.logger.write(
                 f"{role_label} starting with model [{current_model}]"
                 + (" [FULL PERMISSIONS]" if self.full_perms else ""),
                 role_color,
             )
             emit(
-                "agent_start",
+                "engine_start",
                 role=role,
                 model=current_model,
                 fullPermissions=self.full_perms,
@@ -250,7 +261,7 @@ class Orchestrator:
                     stderr_lines.append(line)
                     clean = line.rstrip()
                     if clean:
-                        self.logger.write(f"[{role}] stderr: {clean}", "\033[33m")
+                        self.logger.write(f"[{role_label}] stderr: {clean}", "\033[33m")
                         if QUOTA_PATTERNS.search(clean):
                             nonlocal quota_hit
                             quota_hit = True
@@ -278,7 +289,7 @@ class Orchestrator:
                     if AUTH_PATTERNS.search(raw_line):
                         auth_hit = True
                     if stream_to_ui:
-                        emit("agent_delta", role=role, text=raw_line)
+                        emit("engine_delta", role=role, text=raw_line)
                     self.logger.raw(raw_line)
                     continue
 
@@ -300,12 +311,12 @@ class Orchestrator:
                         if QUOTA_PATTERNS.search(delta):
                             quota_hit = True
                         if stream_to_ui:
-                            emit("agent_delta", role=role, text=delta)
+                            emit("engine_delta", role=role, text=delta)
                     elif step_type not in ("user_input", "agent_response", "") and step_idx not in seen_step_tool_idx:
                         seen_step_tool_idx.add(step_idx)
                         tool_info = su.get("tool_name") or step_type
                         self.logger.write(f"  -> {role_label} step #{step_idx}: {tool_info}", "\033[36m")
-                        emit("agent_tool", role=role, step=step_idx, detail=str(tool_info))
+                        emit("engine_step", role=role, step=step_idx, detail=str(tool_info))
                 elif ev_type == "result":
                     res = ev.get("result", {})
                     status = res.get("status", "")
@@ -341,7 +352,11 @@ class Orchestrator:
 
             if auth_hit:
                 self.logger.write("Antigravity CLI authentication required!", "\033[1;31m")
-                return False, output_text, "Antigravity CLI is not authenticated. Open AI Automation settings to sign in.", current_model
+                return False, output_text, (
+                    "Chưa đăng nhập Antigravity CLI. Vui lòng mở Settings -> AI Automation để đăng nhập."
+                    if self.is_vi()
+                    else "Antigravity CLI is not authenticated. Open Settings -> AI Automation to sign in."
+                ), current_model
 
             failed = proc.returncode != 0
             if (quota_hit or (failed and QUOTA_PATTERNS.search(output_text + "\n" + err_text))) and self.auto_switch:
@@ -358,7 +373,7 @@ class Orchestrator:
                         toModel=next_model,
                         reason="Quota or rate limit detected",
                     )
-                    if role == "agent_a":
+                    if role == "supervisor":
                         self.supervisor_model = next_model
                     else:
                         self.worker_model = next_model
@@ -375,67 +390,85 @@ class Orchestrator:
 
     def run_task(self, user_task: str):
         self.logger.write(f"USER REQUEST: {user_task}", "\033[1;34m")
-        emit("phase", phase="planning", detail="Agent A is planning the task for Agent B...")
+        emit(
+            "phase",
+            phase="planning",
+            progress=18,
+            detail="Đang phân tích yêu cầu & lập kế hoạch..." if self.is_vi() else "Analyzing request & planning steps...",
+        )
 
-        # 1. Agent A plans instructions for Agent B
+        # 1. Primary Coordinator plans execution instructions and verification criteria
         plan_prompt = (
-            "You are Agent A (Supervisor AI) controlling a local Linux desktop orchestrator.\n"
-            "Your job is to inspect the user's request, prepare clear concrete execution instructions for Agent B (the Worker Agent), "
+            "You are the Primary AI Coordinator on a local Linux desktop.\n"
+            "Analyze the user's request, write clear concrete execution steps for the background execution engine, "
             "and define verifiable success criteria.\n\n"
+            f"{self.language_instruction()}\n\n"
             f"{self.desktop_context()}\n"
             f"USER REQUEST:\n{user_task}\n\n"
-            "Respond ONLY with valid JSON matching this schema (no markdown outside JSON):\n"
+            "Respond ONLY with valid JSON matching this schema (no extra markdown outside JSON):\n"
             "{\n"
-            '  "summary": "1-2 sentence plan summary shown to the user",\n'
-            '  "worker_prompt": "Complete step-by-step actionable prompt for Agent B to execute the task cleanly and verify outputs before replying",\n'
-            '  "success_criteria": "Exact things Agent A should inspect afterwards to verify Agent B succeeded"\n'
+            '  "summary": "1-2 sentence plan summary for the user",\n'
+            '  "execution_prompt": "Complete step-by-step actionable instructions for execution and output verification",\n'
+            '  "success_criteria": "Exact things to verify afterwards to confirm the task succeeded"\n'
             "}"
         )
 
-        ok, plan_raw, err, eff_a = self.run_agy("agent_a", plan_prompt, self.supervisor_model, stream_to_ui=False)
+        ok, plan_raw, err, eff_sup = self.run_agy("supervisor", plan_prompt, self.supervisor_model, stream_to_ui=False)
         if not ok:
-            emit("task_error", message=err or "Agent A failed to plan the task.")
+            emit("task_error", message=err or ("Không thể lập kế hoạch thực thi." if self.is_vi() else "Failed to plan task."))
             return
 
         plan_json = extract_json_block(plan_raw) or {}
-        plan_summary = plan_json.get("summary") or "Dispatching task to Agent B."
-        worker_prompt = plan_json.get("worker_prompt") or (
+        plan_summary = plan_json.get("summary") or ("Bắt đầu thực thi tác vụ." if self.is_vi() else "Starting task execution.")
+        exec_prompt = plan_json.get("execution_prompt") or (
             f"Execute this user request completely and report concrete verified results:\n{user_task}\n\n{self.desktop_context()}"
         )
-        success_criteria = plan_json.get("success_criteria") or "All requested actions are completed cleanly without errors."
+        success_criteria = plan_json.get("success_criteria") or (
+            "Tất cả tác vụ hoàn tất chính xác và không có lỗi."
+            if self.is_vi()
+            else "All requested actions complete cleanly without errors."
+        )
 
         emit(
-            "agent_message",
-            role="agent_a",
-            model=eff_a,
-            title="Execution Plan",
-            text=f"{plan_summary}\n\nCriteria: {success_criteria}",
+            "assistant_message",
+            model=eff_sup,
+            title="Kế hoạch thực thi" if self.is_vi() else "Execution Plan",
+            text=plan_summary,
         )
-        self.logger.write(f"Agent A Plan: {plan_summary}", "\033[35m")
+        self.logger.write(f"Plan: {plan_summary}", "\033[35m")
 
-        # Loop for Worker execution + Supervisor verification (+ optional user retry loop)
         max_rounds = 4
-        current_worker_prompt = (
-            f"You are Agent B (Worker AI) operating under Supervisor Agent A.\n"
-            f"Execute the task thoroughly on this machine and report exact commands, files, or windows touched.\n\n"
+        current_exec_prompt = (
+            "You are the background Execution Engine operating on the user's machine.\n"
+            "Execute the task thoroughly and concisely report exact commands, files, or windows touched.\n\n"
+            f"{self.language_instruction()}\n\n"
             f"{self.desktop_context()}\n"
             f"USER REQUEST:\n{user_task}\n\n"
-            f"INSTRUCTIONS FROM AGENT A:\n{worker_prompt}"
+            f"EXECUTION PLAN:\n{exec_prompt}"
         )
 
         for round_idx in range(1, max_rounds + 1):
             if self.stop_requested:
                 break
 
-            emit("phase", phase="working", detail=f"Agent B executing (Round {round_idx})...")
-            self.logger.write(f"--- Dispatching Agent B (Round {round_idx}) ---", "\033[1;32m")
-
-            ok_b, worker_out, err_b, eff_b = self.run_agy("agent_b", current_worker_prompt, self.worker_model, stream_to_ui=True)
             emit(
-                "agent_message",
-                role="agent_b",
-                model=eff_b,
-                title=f"Worker Execution (Round {round_idx})",
+                "phase",
+                phase="working",
+                progress=52,
+                detail=(
+                    f"Đang thực thi tác vụ (Lượt {round_idx})..."
+                    if self.is_vi()
+                    else f"Executing task (Step {round_idx})..."
+                ),
+            )
+            self.logger.write(f"--- Executing Task (Round {round_idx}) ---", "\033[1;32m")
+
+            ok_b, worker_out, err_b, eff_exec = self.run_agy("executor", current_exec_prompt, self.worker_model, stream_to_ui=True)
+            emit(
+                "execution_report",
+                model=eff_exec,
+                round=round_idx,
+                title=(f"Kết quả thực thi (Lượt {round_idx})" if self.is_vi() else f"Execution Result (Round {round_idx})"),
                 text=worker_out or (f"Error: {err_b}" if err_b else "(No output)"),
                 ok=ok_b,
             )
@@ -443,77 +476,87 @@ class Orchestrator:
             if self.stop_requested:
                 break
 
-            # Agent A audits Agent B's result against user request
-            emit("phase", phase="verifying", detail="Agent A is auditing Agent B's result against your request...")
-            self.logger.write("Agent A auditing Agent B output against user request...", "\033[1;35m")
+            emit(
+                "phase",
+                phase="verifying",
+                progress=84,
+                detail="Đang kiểm chứng kết quả thực tế..." if self.is_vi() else "Verifying actual outcome against your request...",
+            )
+            self.logger.write("Auditing execution output against user request...", "\033[1;35m")
 
             audit_prompt = (
-                "You are Agent A (Supervisor AI). Agent B just finished executing a task for the user.\n"
-                "You MUST objectively compare Agent B's output (and inspect files/system/windows if needed) against the USER REQUEST and SUCCESS CRITERIA.\n"
-                "Be strict: if Agent B failed, did something wrong, missed part of the request, left an error, or took an unintended/risky action, set valid=false and ask a clear question to the user!\n\n"
+                "You are the Quality & Safety Auditor reviewing what the background Execution Engine just did.\n"
+                "Objectively verify the output (and run quick inspection checks if needed) against the USER REQUEST and SUCCESS CRITERIA.\n"
+                "Be strict: if the task failed, did something wrong, missed part of the request, or left an error/risk, set valid=false and write a helpful confirmation question for the user.\n\n"
+                f"{self.language_instruction()}\n\n"
                 f"USER REQUEST:\n{user_task}\n\n"
                 f"SUCCESS CRITERIA:\n{success_criteria}\n\n"
-                f"AGENT B EXIT STATUS: {'SUCCESS' if ok_b else 'FAILED (' + err_b + ')'}\n"
-                f"AGENT B REPORT:\n{worker_out}\n\n"
+                f"EXECUTION STATUS: {'SUCCESS' if ok_b else 'FAILED (' + err_b + ')'}\n"
+                f"EXECUTION REPORT:\n{worker_out}\n\n"
                 "Respond ONLY with valid JSON:\n"
                 "{\n"
                 '  "valid": true or false,\n'
-                '  "verification": "Clear summary of what was verified on the system and the final outcome",\n'
-                '  "question_for_user": "If valid is false (or confirmation is required), write a direct, helpful question asking the user how to proceed; otherwise empty string",\n'
-                '  "suggested_fix_prompt": "If valid is false, write concrete correction instructions for Agent B; otherwise empty string"\n'
+                '  "verification": "Clear concise summary of what was verified and the final outcome",\n'
+                '  "question_for_user": "If valid is false (or confirmation is required), direct question asking how to proceed; otherwise empty string",\n'
+                '  "suggested_fix_prompt": "If valid is false, concrete fix instructions; otherwise empty string"\n'
                 "}"
             )
 
-            ok_v, audit_raw, err_v, eff_a2 = self.run_agy("agent_a", audit_prompt, self.supervisor_model, stream_to_ui=False)
+            ok_v, audit_raw, err_v, eff_sup2 = self.run_agy("supervisor", audit_prompt, self.supervisor_model, stream_to_ui=False)
             if not ok_v:
-                emit("task_error", message=err_v or "Agent A audit failed.")
+                emit("task_error", message=err_v or ("Kiểm chứng thất bại." if self.is_vi() else "Verification failed."))
                 return
 
             audit = extract_json_block(audit_raw) or {}
             is_valid = bool(audit.get("valid", ok_b))
-            verification = str(audit.get("verification") or audit_raw or "Verification completed.")
+            verification = str(audit.get("verification") or audit_raw or "Done.")
             question = str(audit.get("question_for_user") or "").strip()
             fix_prompt = str(audit.get("suggested_fix_prompt") or "").strip()
 
-            self.logger.write(f"Agent A Audit -> valid={is_valid}: {verification}", "\033[1;35m")
+            self.logger.write(f"Audit -> valid={is_valid}: {verification}", "\033[1;35m")
 
             if is_valid:
                 emit(
-                    "agent_message",
-                    role="agent_a",
-                    model=eff_a2,
-                    title="Verification Passed",
+                    "assistant_message",
+                    model=eff_sup2,
+                    title="Hoàn tất & Đã kiểm chứng" if self.is_vi() else "Verified & Completed",
                     text=verification,
                 )
-                emit("task_complete", summary=verification)
+                emit("task_complete", progress=100, summary=verification)
                 self.logger.write("TASK COMPLETED SUCCESSFULLY.", "\033[1;32m")
                 return
 
-            # Invalid or questionable output -> Ask user if enabled!
             if not self.ask_on_invalid:
                 emit(
-                    "agent_message",
-                    role="agent_a",
-                    model=eff_a2,
-                    title="Verification Issue",
+                    "assistant_message",
+                    model=eff_sup2,
+                    title="Phát hiện vấn đề" if self.is_vi() else "Verification Issue",
                     text=verification,
                 )
                 emit("task_error", message=verification)
                 return
 
-            prompt_question = question or f"Agent A found an issue verifying Agent B's result:\n{verification}\n\nWould you like Agent B to retry with corrections, accept the result anyway, or stop?"
-            emit("phase", phase="waiting_user", detail="Agent A is waiting for your confirmation...")
+            fallback_q = (
+                f"Hệ thống phát hiện vấn đề khi kiểm chứng:\n{verification}\n\nBạn muốn chạy lại để sửa, chấp nhận kết quả này, hay dừng tác vụ?"
+                if self.is_vi()
+                else f"Verification detected an issue:\n{verification}\n\nWould you like to retry with fixes, accept anyway, or stop?"
+            )
+            prompt_question = question or fallback_q
+            emit(
+                "phase",
+                phase="waiting_user",
+                progress=75,
+                detail="Đang chờ xác nhận từ bạn..." if self.is_vi() else "Waiting for your confirmation...",
+            )
             emit(
                 "user_question",
-                role="agent_a",
-                model=eff_a2,
+                model=eff_sup2,
                 verification=verification,
                 question=prompt_question,
                 suggestedFix=fix_prompt,
             )
-            self.logger.write(f"Agent A ASKING USER: {prompt_question}", "\033[1;33m")
+            self.logger.write(f"ASKING USER: {prompt_question}", "\033[1;33m")
 
-            # Block cleanly waiting for reply from UI stdin
             while not self.stop_requested:
                 try:
                     reply = self.inbox.get(timeout=0.5)
@@ -523,7 +566,7 @@ class Orchestrator:
                 rtype = reply.get("type")
                 if rtype == "stop":
                     self.stop_requested = True
-                    emit("task_error", message="Task stopped by user.")
+                    emit("task_error", message="Đã dừng theo yêu cầu." if self.is_vi() else "Task stopped by user.")
                     return
                 if rtype == "user_reply":
                     action = reply.get("action", "retry")
@@ -531,25 +574,25 @@ class Orchestrator:
                     self.logger.write(f"USER REPLY ({action}): {user_text}", "\033[1;34m")
 
                     if action == "accept":
-                        emit("task_complete", summary=f"Accepted by user.\n{verification}")
+                        emit("task_complete", progress=100, summary=verification)
                         return
                     elif action == "abort":
-                        emit("task_error", message="Aborted by user confirmation.")
+                        emit("task_error", message="Đã hủy theo xác nhận người dùng." if self.is_vi() else "Aborted by user.")
                         return
                     else:
-                        # Retry Agent B with guidance
-                        guidance = user_text or fix_prompt or "Fix the issues identified by Agent A and verify carefully."
-                        current_worker_prompt = (
-                            f"You are Agent B (Worker AI). Your previous attempt did not pass Supervisor verification.\n\n"
+                        guidance = user_text or fix_prompt or "Fix the identified issues and verify carefully."
+                        current_exec_prompt = (
+                            "Previous attempt did not pass verification. Apply corrections carefully.\n\n"
+                            f"{self.language_instruction()}\n\n"
                             f"{self.desktop_context()}\n"
                             f"ORIGINAL USER REQUEST:\n{user_task}\n\n"
                             f"VERIFICATION ISSUE:\n{verification}\n\n"
-                            f"NEW GUIDANCE FROM USER / AGENT A:\n{guidance}\n\n"
+                            f"USER / COORDINATOR GUIDANCE:\n{guidance}\n\n"
                             "Fix the issue completely and report verified results."
                         )
                         break
 
-        emit("task_error", message="Reached maximum retry rounds or stopped.")
+        emit("task_error", message="Đã vượt quá số lần thử lại tối đa." if self.is_vi() else "Reached maximum retry rounds.")
 
 
 def main():
@@ -567,7 +610,6 @@ def main():
     if task_prompt:
         orch.run_task(task_prompt)
     else:
-        # Wait for first start message from stdin
         while not orch.stop_requested:
             try:
                 cmd = orch.inbox.get(timeout=0.5)

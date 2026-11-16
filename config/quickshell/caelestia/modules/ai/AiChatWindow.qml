@@ -19,9 +19,9 @@ Item {
         switch (role) {
         case "user":
             return Colours.palette.m3primaryContainer;
-        case "agent_a":
+        case "assistant":
             return Colours.palette.m3secondaryContainer;
-        case "agent_b":
+        case "execution":
             return Colours.layer(Colours.palette.m3surfaceContainerHigh, 2);
         case "question":
             return Colours.palette.m3errorContainer;
@@ -34,9 +34,9 @@ Item {
         switch (role) {
         case "user":
             return Colours.palette.m3onPrimaryContainer;
-        case "agent_a":
+        case "assistant":
             return Colours.palette.m3onSecondaryContainer;
-        case "agent_b":
+        case "execution":
             return Colours.palette.m3onSurface;
         case "question":
             return Colours.palette.m3onErrorContainer;
@@ -49,10 +49,10 @@ Item {
         switch (role) {
         case "user":
             return "person";
-        case "agent_a":
-            return "supervisor_account";
-        case "agent_b":
-            return "smart_toy";
+        case "assistant":
+            return "auto_awesome";
+        case "execution":
+            return "memory";
         case "question":
             return "help";
         default:
@@ -63,34 +63,34 @@ Item {
     function roleName(role: string): string {
         switch (role) {
         case "user":
-            return "You";
-        case "agent_a":
-            return "Agent A • Supervisor";
-        case "agent_b":
-            return "Agent B • Worker";
+            return AiAutomationService.trChat("Bạn", "You");
+        case "assistant":
+            return "Meow AI";
+        case "execution":
+            return AiAutomationService.trChat("Tiến trình thực thi", "Execution Summary");
         case "question":
-            return "Agent A • Confirmation";
+            return AiAutomationService.trChat("Meow AI • Cần xác nhận", "Meow AI • Confirmation");
         default:
-            return "System";
+            return AiAutomationService.trChat("Hệ thống", "System");
         }
     }
 
     function phaseLabel(): string {
         switch (AiAutomationService.currentPhase) {
         case "planning":
-            return "Agent A Planning";
+            return AiAutomationService.trChat("Đang lập kế hoạch", "Planning");
         case "working":
-            return "Agent B Executing";
+            return AiAutomationService.trChat("Đang thực thi", "Running");
         case "verifying":
-            return "Agent A Verifying";
+            return AiAutomationService.trChat("Đang kiểm chứng", "Verifying");
         case "waiting_user":
-            return "Needs Your Reply";
+            return AiAutomationService.trChat("Chờ xác nhận", "Needs Reply");
         case "done":
-            return "Completed";
+            return AiAutomationService.trChat("Hoàn tất", "Done");
         case "error":
-            return "Attention";
+            return AiAutomationService.trChat("Cần chú ý", "Attention");
         default:
-            return "Idle";
+            return AiAutomationService.trChat("Sẵn sàng", "Ready");
         }
     }
 
@@ -134,7 +134,7 @@ Item {
                     spacing: 1
 
                     StyledText {
-                        text: "AI Supervisor Monitor"
+                        text: "Meow AI Assistant"
                         font: Tokens.font.title.small
                         elide: Text.ElideRight
                     }
@@ -163,7 +163,10 @@ Item {
 
                         StyledText {
                             Layout.fillWidth: true
-                            text: AiAutomationService.phaseDetail || "Agent A supervises Agent B with full desktop automation."
+                            text: AiAutomationService.phaseDetail || AiAutomationService.trChat(
+                                "Tự động lập kế hoạch, thực thi và đối chiếu kết quả ngay tại đây.",
+                                "Plans, executes, and verifies desktop & shell tasks inline."
+                            )
                             font: Tokens.font.label.small
                             color: Colours.palette.m3onSurfaceVariant
                             elide: Text.ElideRight
@@ -171,6 +174,7 @@ Item {
                     }
                 }
 
+                // Optional raw log viewer
                 IconButton {
                     visible: AiAutomationService.currentLogPath.length > 0
                     icon: "terminal"
@@ -187,7 +191,7 @@ Item {
                     inactiveOnColour: root.pinned ? Colours.palette.m3primary : Colours.palette.m3onSurfaceVariant
                     onClicked: {
                         root.pinned = !root.pinned;
-                        Quickshell.execDetached(["hyprctl", "dispatch", "pin", "title:^(AI Automation — ).*"]);
+                        Quickshell.execDetached(["hyprctl", "dispatch", "pin", "title:^(Meow AI — ).*"]);
                     }
                 }
 
@@ -225,41 +229,66 @@ Item {
             }
         }
 
-        // Active Agent A <-> Agent B telemetry pill
+        // Compact status + progress strip
         StyledRect {
             Layout.fillWidth: true
-            implicitHeight: telemetryRow.implicitHeight + Tokens.padding.small * 2
+            implicitHeight: telemetryCol.implicitHeight + Tokens.padding.small * 2
             radius: Tokens.rounding.large
             color: Colours.layer(Colours.palette.m3surfaceContainerLow, 2)
 
-            RowLayout {
-                id: telemetryRow
+            ColumnLayout {
+                id: telemetryCol
                 anchors.fill: parent
                 anchors.margins: Tokens.padding.small
                 anchors.leftMargin: Tokens.padding.medium
                 anchors.rightMargin: Tokens.padding.medium
-                spacing: Tokens.spacing.medium
+                spacing: Tokens.spacing.extraSmall
 
-                StyledText {
-                    text: `A: ${AiAutomationService.activeSupervisorModel || AiAutomationService.supervisorModel}`
-                    font: Tokens.font.label.small
-                    color: Colours.palette.m3primary
-                    elide: Text.ElideRight
+                RowLayout {
                     Layout.fillWidth: true
+                    spacing: Tokens.spacing.medium
+
+                    StyledText {
+                        text: `${AiAutomationService.trChat("Điều phối", "Planner")}: ${AiAutomationService.activeSupervisorModel || AiAutomationService.supervisorModel}`
+                        font: Tokens.font.label.small
+                        color: Colours.palette.m3primary
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                    }
+
+                    StyledText {
+                        text: `${AiAutomationService.trChat("Thực thi", "Runner")}: ${AiAutomationService.activeWorkerModel || AiAutomationService.workerModel}`
+                        font: Tokens.font.label.small
+                        color: Colours.palette.m3secondary
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                    }
+
+                    StyledText {
+                        text: AiAutomationService.chatLanguage.toUpperCase()
+                        font: Tokens.font.label.small
+                        color: Colours.palette.m3tertiary
+                    }
                 }
 
-                StyledText {
-                    text: `B: ${AiAutomationService.activeWorkerModel || AiAutomationService.workerModel}`
-                    font: Tokens.font.label.small
-                    color: Colours.palette.m3secondary
-                    elide: Text.ElideRight
+                // Thin inline progress bar during execution
+                StyledRect {
+                    visible: AiAutomationService.running || AiAutomationService.currentPhase === "done"
                     Layout.fillWidth: true
-                }
+                    implicitHeight: 4
+                    radius: 2
+                    color: Colours.palette.m3surfaceContainerHighest
 
-                StyledText {
-                    text: AiAutomationService.fullPermissions ? "Full Perms" : "Standard"
-                    font: Tokens.font.label.small
-                    color: AiAutomationService.fullPermissions ? Colours.palette.m3tertiary : Colours.palette.m3outline
+                    StyledRect {
+                        height: parent.height
+                        radius: 2
+                        width: parent.width * Math.max(0.06, Math.min(1.0, AiAutomationService.currentProgress / 100))
+                        color: AiAutomationService.currentPhase === "done" ? Colours.palette.m3tertiary : Colours.palette.m3primary
+
+                        Behavior on width {
+                            Anim {}
+                        }
+                    }
                 }
             }
         }
@@ -298,14 +327,15 @@ Item {
 
                         MaterialIcon {
                             Layout.alignment: Qt.AlignHCenter
-                            text: "forum"
+                            text: "auto_awesome"
                             fontStyle: Tokens.font.icon.extraLarge
                             color: Colours.palette.m3primary
+                            fill: 1
                         }
 
                         StyledText {
                             Layout.alignment: Qt.AlignHCenter
-                            text: "Agent A -> Agent B Live Chat"
+                            text: AiAutomationService.trChat("Trợ lý Tự động hóa Meow AI", "Meow AI Task Automation")
                             font: Tokens.font.title.small
                         }
 
@@ -313,7 +343,10 @@ Item {
                             Layout.fillWidth: true
                             horizontalAlignment: Text.AlignHCenter
                             wrapMode: Text.WordWrap
-                            text: "Press SUPER + > or type a task below. Agent A plans & opens a live terminal for Agent B, then verifies every result against your request."
+                            text: AiAutomationService.trChat(
+                                "Nhấn SUPER + > hoặc nhập >ai <câu lệnh> từ Launcher. Tiến trình thực thi và đối chiếu kết quả sẽ hiển thị trực tiếp tại đây.",
+                                "Press SUPER + > or type >ai <task> from the Launcher. Execution steps and verification render directly in this chat."
+                            )
                             font: Tokens.font.body.small
                             color: Colours.palette.m3onSurfaceVariant
                         }
@@ -324,9 +357,10 @@ Item {
                     width: chatList.width
                     height: liveBox.visible ? liveBox.implicitHeight + Tokens.spacing.small : 0
 
+                    // Embedded Live Progress Card (replaces popup terminal window)
                     StyledRect {
                         id: liveBox
-                        visible: AiAutomationService.running && (AiAutomationService.streamingWorkerText.length > 0 || AiAutomationService.currentPhase === "working")
+                        visible: AiAutomationService.running
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.top: parent.top
@@ -344,28 +378,62 @@ Item {
                             spacing: Tokens.spacing.extraSmall
 
                             RowLayout {
+                                Layout.fillWidth: true
                                 spacing: Tokens.spacing.small
 
                                 MaterialIcon {
-                                    text: "smart_toy"
+                                    text: "progress_activity"
                                     fontStyle: Tokens.font.icon.small
                                     color: Colours.palette.m3primary
-                                    fill: 1
                                 }
 
                                 StyledText {
-                                    text: `Agent B • Working live (${AiAutomationService.streamingWorkerModel || AiAutomationService.workerModel})`
+                                    Layout.fillWidth: true
+                                    text: AiAutomationService.phaseDetail || AiAutomationService.trChat("Đang xử lý tác vụ...", "Processing task...")
                                     font: Tokens.font.label.medium
                                     color: Colours.palette.m3primary
+                                    elide: Text.ElideRight
+                                }
+
+                                StyledText {
+                                    text: `${AiAutomationService.currentProgress}%`
+                                    font: Tokens.font.label.small
+                                    color: Colours.palette.m3onSurfaceVariant
+                                }
+                            }
+
+                            // Recent tool execution steps inline
+                            Repeater {
+                                model: AiAutomationService.liveSteps.slice(-6)
+
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: Tokens.spacing.small
+
+                                    MaterialIcon {
+                                        text: "terminal"
+                                        fontStyle: Tokens.font.icon.small
+                                        color: Colours.palette.m3secondary
+                                    }
+
+                                    StyledText {
+                                        Layout.fillWidth: true
+                                        text: `${modelData.ts}  ${modelData.label}`
+                                        font: Tokens.font.label.small
+                                        color: Colours.palette.m3onSurfaceVariant
+                                        elide: Text.ElideRight
+                                    }
                                 }
                             }
 
                             StyledText {
                                 Layout.fillWidth: true
-                                text: AiAutomationService.streamingWorkerText || "Executing actions & streaming output..."
+                                visible: AiAutomationService.streamingWorkerText.length > 0
+                                text: AiAutomationService.streamingWorkerText
                                 wrapMode: Text.WordWrap
                                 font: Tokens.font.body.small
-                                color: Colours.palette.m3onSurfaceVariant
+                                color: Colours.palette.m3onSurface
                             }
                         }
                     }
@@ -444,7 +512,7 @@ Item {
             }
         }
 
-        // Interactive Agent A confirmation actions
+        // Interactive Confirmation Card
         StyledRect {
             visible: AiAutomationService.hasPendingQuestion
             Layout.fillWidth: true
@@ -470,7 +538,10 @@ Item {
 
                     StyledText {
                         Layout.fillWidth: true
-                        text: "Agent A paused because Agent B's result needs confirmation. Reply below or choose an action:"
+                        text: AiAutomationService.trChat(
+                            "Kết quả chưa khớp hoặc cần xác nhận. Nhập phản hồi bên dưới hoặc chọn thao tác:",
+                            "Verification flagged an issue. Type instructions below or choose an action:"
+                        )
                         font: Tokens.font.label.medium
                         color: Colours.palette.m3onErrorContainer
                         wrapMode: Text.WordWrap
@@ -483,7 +554,7 @@ Item {
 
                     IconTextButton {
                         icon: "refresh"
-                        text: "Retry Agent B"
+                        text: AiAutomationService.trChat("Thử lại", "Retry")
                         type: IconTextButton.Filled
                         onClicked: {
                             const txt = promptInput.text.trim();
@@ -494,14 +565,14 @@ Item {
 
                     IconTextButton {
                         icon: "check"
-                        text: "Accept Result"
+                        text: AiAutomationService.trChat("Chấp nhận", "Accept")
                         type: IconTextButton.Tonal
                         onClicked: AiAutomationService.sendReply("accept", "")
                     }
 
                     IconTextButton {
                         icon: "close"
-                        text: "Abort"
+                        text: AiAutomationService.trChat("Hủy bỏ", "Abort")
                         type: IconTextButton.Text
                         onClicked: AiAutomationService.sendReply("abort", "")
                     }
@@ -509,7 +580,7 @@ Item {
             }
         }
 
-        // Bottom task/reply input
+        // Bottom task/reply input (TextFieldBase supports fcitx5 Vietnamese IME cleanly)
         StyledRect {
             Layout.fillWidth: true
             implicitHeight: Math.max(48, inputRow.implicitHeight + Tokens.padding.small * 2)
@@ -520,18 +591,19 @@ Item {
                 id: inputRow
                 anchors.fill: parent
                 anchors.margins: Tokens.padding.small
-                anchors.leftMargin: Tokens.padding.large
+                anchors.leftMargin: Tokens.padding.medium
                 spacing: Tokens.spacing.small
 
-                TextInput {
+                TextFieldBase {
                     id: promptInput
                     Layout.fillWidth: true
                     Layout.alignment: Qt.AlignVCenter
-                    color: Colours.palette.m3onSurface
-                    font.family: Tokens.font.body.medium.family
-                    font.pixelSize: Tokens.font.body.medium.pixelSize
-                    selectByMouse: true
-                    clip: true
+                    background: Item {}
+                    leftPadding: Tokens.padding.small
+                    rightPadding: Tokens.padding.small
+                    topPadding: 6
+                    bottomPadding: 6
+                    font: Tokens.font.body.small
 
                     onAccepted: {
                         const txt = promptInput.text.trim();
@@ -543,13 +615,17 @@ Item {
 
                     StyledText {
                         anchors.verticalCenter: parent.verticalCenter
+                        anchors.left: parent.left
+                        anchors.leftMargin: Tokens.padding.small
                         visible: !promptInput.text
                         text: AiAutomationService.hasPendingQuestion
-                            ? "Type guidance for Agent A / Agent B and press Enter..."
-                            : "Type an AI automation task (e.g. Open Firefox and check Arch Wiki)..."
+                            ? AiAutomationService.trChat("Nhập hướng dẫn sửa và nhấn Enter...", "Type guidance and press Enter...")
+                            : AiAutomationService.trChat("Nhập yêu cầu mới (sẽ làm mới đoạn chat)...", "Type a new automation task (starts fresh chat)...")
                         color: Colours.palette.m3outline
                         font: Tokens.font.body.small
                     }
+
+                    Component.onCompleted: Qt.callLater(() => promptInput.forceActiveFocus())
                 }
 
                 IconButton {

@@ -28,15 +28,15 @@ Searcher {
             const builtIn = [
                 {
                     name: "AI Auto Task",
-                    description: "Run autonomous Agent A -> Agent B task with live terminal",
+                    description: "Type '>ai <command>' to run an autonomous task inline in Meow AI Chat",
                     icon: "auto_awesome",
                     command: ["autocomplete", "ai"],
                     enabled: true,
                     dangerous: false
                 },
                 {
-                    name: "AI Supervisor Monitor",
-                    description: "Open the live Agent A <-> Agent B progress & chat window",
+                    name: "Meow AI Assistant",
+                    description: "Open the Meow AI Chat & Task Progress window",
                     icon: "forum",
                     command: ["qs", "-c", "caelestia", "ipc", "call", "ai", "openMonitor"],
                     enabled: true,

@@ -3,6 +3,8 @@
 //@ pragma DefaultEnv QS_DROP_EXPENSIVE_FONTS=1
 //@ pragma DefaultEnv QSG_RENDER_LOOP=threaded
 //@ pragma DefaultEnv QT_QUICK_FLICKABLE_WHEEL_DECELERATION=10000
+//@ pragma DefaultEnv QT_IM_MODULE=fcitx
+//@ pragma DefaultEnv XMODIFIERS=@im=fcitx
 
 import "modules"
 import "modules/drawers"

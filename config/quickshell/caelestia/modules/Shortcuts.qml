@@ -145,6 +145,7 @@ Scope {
         function openAiLauncher(): void {
             if (root.hasFullscreen)
                 return;
+            root.launcherInterrupted = true;
             AiAutomationService.pendingLauncherText = `${GlobalConfig.launcher.actionPrefix}ai `;
             const screenState = ShellState.forActive();
             screenState.launcher = true;

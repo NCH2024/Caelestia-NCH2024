@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import Quickshell
 import Caelestia
 import Caelestia.Config
 import Caelestia.I18n
@@ -62,6 +63,17 @@ Item {
         placeholderText: Tr.tr("Type \"%1\" for commands").arg(GlobalConfig.launcher.actionPrefix)
 
         onAccepted: {
+            const aiPrefix = `${GlobalConfig.launcher.actionPrefix}ai`;
+            if (text === aiPrefix || text.startsWith(`${aiPrefix} `)) {
+                const taskPrompt = text.startsWith(`${aiPrefix} `) ? text.slice(`${aiPrefix} `.length).trim() : "";
+                root.screenState.launcher = false;
+                if (taskPrompt.length > 0)
+                    AiAutomationService.runTask(taskPrompt);
+                else
+                    Quickshell.execDetached(["qs", "-c", "caelestia", "ipc", "call", "ai", "openMonitor"]);
+                return;
+            }
+
             const currentItem = list.currentList?.currentItem;
             if (currentItem) {
                 if (list.showWallpapers) {
@@ -70,7 +82,7 @@ Item {
                     Wallpapers.setWallpaper(currentItem.modelData.path);
                     root.screenState.launcher = false;
                 } else if (text.startsWith(GlobalConfig.launcher.actionPrefix)) {
-                    if (text.startsWith(`${GlobalConfig.launcher.actionPrefix}calc `) || text === `${GlobalConfig.launcher.actionPrefix}ai` || text.startsWith(`${GlobalConfig.launcher.actionPrefix}ai `))
+                    if (text.startsWith(`${GlobalConfig.launcher.actionPrefix}calc `))
                         currentItem.onClicked();
                     else
                         currentItem.modelData.onClicked(list.currentList);
@@ -113,18 +125,20 @@ Item {
                 search.cursorPosition = search.text.length;
                 AiAutomationService.pendingLauncherText = "";
             }
-            forceActiveFocus();
+            Qt.callLater(() => search.forceActiveFocus());
         }
 
         Connections {
             function onLauncherChanged(): void {
                 if (!root.screenState.launcher) {
                     search.text = "";
-                } else if (AiAutomationService.pendingLauncherText.length > 0) {
-                    search.text = AiAutomationService.pendingLauncherText;
-                    search.cursorPosition = search.text.length;
-                    AiAutomationService.pendingLauncherText = "";
-                    search.forceActiveFocus();
+                } else {
+                    if (AiAutomationService.pendingLauncherText.length > 0) {
+                        search.text = AiAutomationService.pendingLauncherText;
+                        search.cursorPosition = search.text.length;
+                        AiAutomationService.pendingLauncherText = "";
+                    }
+                    Qt.callLater(() => search.forceActiveFocus());
                 }
             }
 

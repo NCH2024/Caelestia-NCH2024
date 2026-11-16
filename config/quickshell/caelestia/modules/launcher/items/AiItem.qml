@@ -65,7 +65,9 @@ Item {
 
             StyledText {
                 Layout.fillWidth: true
-                text: root.prompt.length > 0 ? `Run AI Task: ${root.prompt}` : "Type a task after >ai and press Enter"
+                text: root.prompt.length > 0
+                    ? AiAutomationService.trChat(`Chạy tác vụ AI: ${root.prompt}`, `Run AI Task: ${root.prompt}`)
+                    : AiAutomationService.trChat("Gõ '>ai <câu lệnh>' rồi nhấn Enter để thực thi", "Type '>ai <task>' and press Enter to execute")
                 color: root.prompt.length > 0 ? Colours.palette.m3onSurface : Colours.palette.m3onSurfaceVariant
                 font: Tokens.font.body.medium
                 elide: Text.ElideRight
@@ -73,7 +75,7 @@ Item {
 
             StyledText {
                 Layout.fillWidth: true
-                text: `Agent A (${AiAutomationService.supervisorModel}) -> Agent B (${AiAutomationService.workerModel})${AiAutomationService.autoSwitchOnQuota ? " • Auto-Failover" : ""}`
+                text: `Meow AI • ${AiAutomationService.supervisorModel} • ${AiAutomationService.chatLanguage.toUpperCase()}${AiAutomationService.autoSwitchOnQuota ? " • Auto-Failover" : ""}`
                 color: Colours.palette.m3outline
                 font: Tokens.font.label.small
                 elide: Text.ElideRight
