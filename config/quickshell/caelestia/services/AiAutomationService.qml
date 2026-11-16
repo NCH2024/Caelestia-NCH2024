@@ -634,7 +634,7 @@ Singleton {
 
     Process {
         id: ensureDirsProc
-        command: ["mkdir", "-p", root.logsDir]
+        command: ["bash", "-c", `mkdir -p '${root.logsDir}' && python3 '${Quickshell.shellPath("scripts/build_system_map.py")}' >/dev/null 2>&1 || true`]
     }
 
     Process {

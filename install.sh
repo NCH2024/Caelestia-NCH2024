@@ -100,6 +100,7 @@ sudo install -m 0755 "$REPO_DIR/bin/caelestia-optimize" /usr/local/bin/caelestia
 sudo install -m 0755 "$REPO_DIR/bin/caelestia-telemetry" /usr/local/bin/caelestia-telemetry
 mkdir -p "$HOME/.local/bin"
 ln -sf "$HOME/.config/quickshell/caelestia/scripts/desktop_ctl.py" "$HOME/.local/bin/caelestia-desktop"
+python3 "$HOME/.config/quickshell/caelestia/scripts/build_system_map.py" >/dev/null 2>&1 || true
 
 if (( WITH_SDDM == 1 )); then
     echo "[Optional] Installing Caelestia SDDM login theme..."

@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Caelestia AI Task Automation Orchestrator.
+Caelestia AI Task Automation Orchestrator (v3 — Low-Latency 3-Tier Engine).
 
-Key capabilities:
-1. Persistent Quota Cooldown Cache (~/.cache/caelestia/ai_model_cooldowns.json):
-   Parses reset times (`Resets in XhYmZs`) on 429/RESOURCE_EXHAUSTED so exhausted
-   models are immediately skipped across threads and future requests (zero 429 thrashing).
-2. Smart Triage (`direct` vs `delegate`):
-   - `direct`: Simple Q&A -> Coordinator replies immediately without spawning workers.
-   - `delegate`: Scales 1..4 specialists dynamically (parallel or sequential).
-3. Autonomous Polish-Until-Verified Loop:
-   Coordinator audits collaborator work as `complete`, `needs_polish` (auto-fixes up to 2 passes),
-   or `needs_user_input` (asks confirmation inline in Chat), then synthesizes ONE clean reply.
-4. Pixel-Accurate Desktop Computer-Use Bridge (`caelestia-desktop`):
-   Supports GUI workflows across browsers and desktop apps with grid screenshots, calibrated
-   cursor clicks, UTF-8/Vietnamese typing, hotkeys, and OCR.
+Architecture:
+1. Preloaded Static System Knowledge (`~/AGENTS.md` auto-discovered by `agy` CLI):
+   Zero exploration turns for modes, IPC, paths, or `caelestia-desktop` syntax;
+   keeps static prefix stable for maximum provider KV prompt caching.
+2. Adaptive 3-Tier Routing (`--effort low` triage -> ~2-4s):
+   - Tier 1 (`direct`): Pure Q&A / math / snippets -> answered immediately inside triage.
+   - Tier 2 (`single`): Browser control, media, system modes, quick fixes, and multi-action
+     user workflows -> executed & self-verified inside ONE continuous `agy` session
+     (`--effort medium`, `--conversation` cache reuse on polish) — ~4x faster & ~75% fewer tokens.
+   - Tier 3 (`multi`): Heavy multi-file UI/code engineering or deep multi-workstream tasks
+     -> 2-3 strictly parallel specialist tracks + unified Coordinator verification & polish loop.
+3. Persistent Quota Cooldown Cache (~/.cache/caelestia/ai_model_cooldowns.json):
+   Parses 429 `Resets in XhYmZs` durations and skips exhausted models immediately.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -60,7 +60,7 @@ def emit(event_type: str, **payload):
 def parse_reset_seconds(text: str) -> int:
     m = RESET_DURATION_RE.search(text or "")
     if not m:
-        return 1800  # 30 minutes default cooldown on unspecified rate limit
+        return 1800
     days = int(m.group(1) or 0)
     hours = int(m.group(2) or 0)
     mins = int(m.group(3) or 0)
@@ -203,19 +203,6 @@ class Orchestrator:
         self.ask_on_invalid = bool(config.get("askOnInvalidResult", True))
         self.chat_language = str(config.get("chatLanguage", "vi") or "vi").lower()
         self.cwd = config.get("cwd") or os.path.expanduser("~")
-        self.ydotool_active = self._check_ydotool()
-
-    def _check_ydotool(self) -> bool:
-        try:
-            res = subprocess.run(
-                ["systemctl", "--user", "is-active", "ydotool"],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-            return res.returncode == 0
-        except Exception:
-            return False
 
     def is_vi(self) -> bool:
         return self.chat_language == "vi"
@@ -223,19 +210,17 @@ class Orchestrator:
     def language_instruction(self) -> str:
         if self.chat_language == "vi":
             return (
-                "LANGUAGE REQUIREMENT (STRICT): You MUST write ALL user-facing answers, plans, summaries, "
-                "and confirmation questions in clear, natural Vietnamese (Tiếng Việt). "
-                "Never refer to internal roles as 'Agent A', 'Agent B', 'Agent C'; speak cohesively as Meow AI."
+                "LANGUAGE: Write ALL user-facing text in natural, concise Vietnamese (Tiếng Việt). "
+                "Never expose internal labels ('Agent A/B/C')."
             )
         elif self.chat_language == "en":
             return (
-                "LANGUAGE REQUIREMENT (STRICT): Write ALL user-facing answers, plans, summaries, "
-                "and confirmation questions in clear, concise English. "
-                "Never refer to internal roles as 'Agent A', 'Agent B', 'Agent C'; speak cohesively as Meow AI."
+                "LANGUAGE: Write ALL user-facing text in clear, concise English. "
+                "Never expose internal labels ('Agent A/B/C')."
             )
         return (
-            "LANGUAGE REQUIREMENT: Match the exact language of the USER REQUEST for all answers, summaries, "
-            "and confirmation questions. Never expose internal 'Agent A/B/C' labels."
+            "LANGUAGE: Match the exact language of USER REQUEST for all user-facing text. "
+            "Never expose internal labels ('Agent A/B/C')."
         )
 
     def start_stdin_reader(self):
@@ -288,21 +273,24 @@ class Orchestrator:
         for cand in self.ordered_candidates(preferred):
             if cand in tried:
                 continue
-            cooled, rem = self.cooldowns.is_cooled_down(cand)
+            cooled, _ = self.cooldowns.is_cooled_down(cand)
             if not cooled:
                 return cand
         return None
 
     def resolve_initial_model(self, role: str, preferred: str) -> str | None:
         with self.model_lock:
-            current = self.supervisor_model if role == "coordinator" else self.worker_model
+            if role == "router":
+                current = preferred
+            else:
+                current = self.supervisor_model if role == "coordinator" else self.worker_model
         cooled, rem = self.cooldowns.is_cooled_down(current)
         if not cooled:
             return current
         healthy = self.pick_healthy_model(preferred, set())
         if healthy:
             self.logger.write(
-                f"Skipping '{current}' (quota cooldown {format_duration(rem)} left); using healthy model '{healthy}'.",
+                f"Skipping '{current}' (cooldown {format_duration(rem)} left); using '{healthy}'.",
                 "\033[33m",
             )
             with self.model_lock:
@@ -323,24 +311,15 @@ class Orchestrator:
             return healthy
         return None
 
-    def desktop_context(self) -> str:
-        if not self.allow_desktop:
-            return "Desktop/GUI actions are disabled; restrict execution to CLI, files, and shell tasks."
-        return (
-            "ENVIRONMENT & COMPUTER-USE TOOLING (`caelestia-desktop`):\n"
-            f"- OS: Arch Linux + Hyprland Wayland desktop (home: {self.cwd}, ydotoold: {'ACTIVE' if self.ydotool_active else 'auto-starts on call'})\n"
-            "- Use `caelestia-desktop` in bash commands for ALL GUI / browser / app control:\n"
-            "  * `caelestia-desktop windows` -> JSON list of open windows (title, class, workspace, [x,y], [w,h])\n"
-            "  * `caelestia-desktop launch firefox \"https://...\"` (or any GUI app) -> launches cleanly detached\n"
-            "  * `caelestia-desktop focus firefox` -> focuses window cleanly across Lua/standard Hyprland\n"
-            "  * `caelestia-desktop screen --grid --out /tmp/ai_screen.png` -> captures screen with labeled pixel grid; inspect with `view_file` to find exact (x, y) click targets!\n"
-            "  * `caelestia-desktop click <x> <y>` / `--double` / `--button right` -> closed-loop calibrated cursor click (within 3px accuracy)\n"
-            "  * `caelestia-desktop move <x> <y>` / `caelestia-desktop scroll -5 --x <x> --y <y>`\n"
-            "  * `caelestia-desktop type \"nội dung tiếng Việt hoặc URL\" --enter` -> full UTF-8 / Vietnamese typing via clipboard paste\n"
-            "  * `caelestia-desktop key ctrl+l` / `ctrl+t` / `ctrl+c` / `ctrl+v` / `alt+tab` / `enter`\n"
-            "  * `caelestia-desktop ocr [--region \"x,y wxh\"]` -> fast tesseract text extraction from screen\n"
-            "- Note: On this Lua-wrapped Hyprland setup, prefer `caelestia-desktop` over raw `hyprctl dispatch` or raw `ydotool mousemove`.\n"
-        )
+    def fast_router_model(self, model: str) -> str:
+        """Pick lightweight `-low` sibling for fast triage when healthy; avoids model-vs-effort conflicts."""
+        for suffix in ("-xhigh", "-high", "-medium"):
+            if model.endswith(suffix):
+                cand = model[: -len(suffix)] + "-low"
+                cooled, _ = self.cooldowns.is_cooled_down(cand)
+                if not cooled:
+                    return cand
+        return model
 
     def run_agy(
         self,
@@ -348,12 +327,14 @@ class Orchestrator:
         worker_label: str,
         prompt: str,
         preferred_model: str,
-    ) -> tuple[bool, str, str, str]:
+        conversation_id: str | None = None,
+    ) -> tuple[bool, str, str, str, str]:
+        """Returns: (ok, output_text, err_text, effective_model, conversation_id)"""
         tried = set()
         current_model = self.resolve_initial_model(role, preferred_model)
 
         if not current_model:
-            return False, "", "Tất cả model đều đang trong thời gian chờ quota. Hãy kiểm tra lại hoặc xóa cooldown trong Settings -> AI Automation.", preferred_model
+            return False, "", "Tất cả model đều đang trong thời gian chờ quota.", preferred_model, ""
 
         while not self.stop_requested and current_model:
             tried.add(current_model)
@@ -366,13 +347,16 @@ class Orchestrator:
                 "--model",
                 current_model,
             ]
+            if conversation_id:
+                cmd.extend(["--conversation", conversation_id])
             if self.full_perms:
                 cmd.append("--dangerously-skip-permissions")
 
             role_color = "\033[1;35m" if role == "coordinator" else "\033[1;32m"
             self.logger.write(
-                f"[{worker_label}] starting ({current_model})"
-                + (" [FULL PERMS]" if self.full_perms else ""),
+                f"[{worker_label}] starting ({current_model}"
+                + (f", resume={conversation_id[:8]}" if conversation_id else "")
+                + ")",
                 role_color,
             )
             emit("engine_start", role=role, label=worker_label, model=current_model)
@@ -400,6 +384,7 @@ class Orchestrator:
             quota_hit = False
             auth_hit = False
             final_result_text = None
+            captured_conv_id = conversation_id or ""
 
             def read_stderr():
                 for line in proc.stderr:
@@ -436,6 +421,9 @@ class Orchestrator:
                     self.logger.raw(raw_line)
                     continue
 
+                if ev.get("conversation_id") and not captured_conv_id:
+                    captured_conv_id = str(ev["conversation_id"])
+
                 ev_type = ev.get("event")
                 if ev_type == "step_update":
                     su = ev.get("step_update", {})
@@ -460,8 +448,18 @@ class Orchestrator:
                         emit("engine_step", worker=worker_label, step=step_idx, detail=str(tool_info))
                 elif ev_type == "result":
                     res = ev.get("result", {})
+                    if res.get("conversation_id"):
+                        captured_conv_id = str(res["conversation_id"])
                     status = res.get("status", "")
                     final_result_text = res.get("response", "")
+                    usage = res.get("usage")
+                    if usage:
+                        self.logger.write(
+                            f"  [{worker_label}] tokens: in={usage.get('input_tokens', 0)} "
+                            f"cached={usage.get('cache_read_tokens', 0)} out={usage.get('output_tokens', 0)} "
+                            f"time={res.get('duration_seconds', 0):.1f}s",
+                            "\033[2m",
+                        )
                     err_detail = str(res.get("error", "") or "")
                     if err_detail:
                         if QUOTA_PATTERNS.search(err_detail):
@@ -489,15 +487,12 @@ class Orchestrator:
             err_text = "\n".join(stderr_lines).strip()
 
             if self.stop_requested:
-                return False, output_text, "Stopped by user.", current_model
+                return False, output_text, "Stopped by user.", current_model, captured_conv_id
 
             if auth_hit:
-                self.logger.write("Antigravity CLI authentication required!", "\033[1;31m")
                 return False, output_text, (
-                    "Chưa đăng nhập Antigravity CLI. Vui lòng mở Settings -> AI Automation để đăng nhập."
-                    if self.is_vi()
-                    else "Antigravity CLI is not authenticated. Open Settings -> AI Automation to sign in."
-                ), current_model
+                    "Chưa đăng nhập Antigravity CLI." if self.is_vi() else "Antigravity CLI is not authenticated."
+                ), current_model, captured_conv_id
 
             failed = proc.returncode != 0
             combined_err = output_text + "\n" + err_text
@@ -527,27 +522,154 @@ class Orchestrator:
                                 reason=f"Quota exhausted (resets in ~{rem_str})",
                             )
                         current_model = next_model
+                        conversation_id = None  # Cannot reuse conversation ID across model switch safely
                         continue
                 return False, output_text, (
                     f"Hết hạn mức trên tất cả model khả dụng (tạm nghỉ ~{rem_str})."
                     if self.is_vi()
                     else f"All available models reached quota limits (resets in ~{rem_str})."
-                ), current_model
+                ), current_model, captured_conv_id
 
             if failed:
                 self.logger.write(f"[{worker_label}] exited with code {proc.returncode}: {err_text}", "\033[1;31m")
-                return False, output_text, err_text or f"agy exited with code {proc.returncode}", current_model
+                return False, output_text, err_text or f"agy exited with code {proc.returncode}", current_model, captured_conv_id
 
-            return True, output_text, err_text, current_model
+            return True, output_text, err_text, current_model, captured_conv_id
 
-        return False, "", "Stopped by user.", preferred_model
+        return False, "", "Stopped by user.", preferred_model, ""
+
+    def wait_user_reply(self, question: str, final_reply: str, suggest_fix: str, model_used: str) -> tuple[str, str]:
+        emit(
+            "phase",
+            phase="waiting_user",
+            progress=80,
+            detail="Đang chờ bạn xác nhận..." if self.is_vi() else "Waiting for your confirmation...",
+        )
+        emit(
+            "user_question",
+            model=model_used,
+            verification=final_reply,
+            question=question,
+            suggestedFix=suggest_fix,
+        )
+        self.logger.write(f"ASKING USER: {question}", "\033[1;33m")
+
+        while not self.stop_requested:
+            try:
+                reply = self.inbox.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            rtype = reply.get("type")
+            if rtype == "stop":
+                return "abort", ""
+            if rtype == "user_reply":
+                action = str(reply.get("action", "retry"))
+                text = str(reply.get("text", "")).strip()
+                self.logger.write(f"USER REPLY ({action}): {text}", "\033[1;34m")
+                return action, text
+        return "abort", ""
+
+    def run_single_fast(self, user_task: str, plan_summary: str):
+        """Tier 2 Fast Lane: One continuous cached `agy` session executes & verifies directly."""
+        emit(
+            "assistant_message",
+            model=self.worker_model,
+            title="Đang thực thi" if self.is_vi() else "Executing",
+            text=plan_summary,
+        )
+        emit(
+            "phase",
+            phase="working",
+            progress=45,
+            detail="Đang thực thi & tự kiểm chứng..." if self.is_vi() else "Executing & verifying...",
+        )
+
+        desktop_rule = (
+            "Desktop GUI control (`caelestia-desktop`) is ALLOWED."
+            if self.allow_desktop
+            else "Desktop GUI actions are DISABLED; use CLI/files only."
+        )
+        exec_prompt = (
+            "You are Meow AI executing a user request in ONE efficient session.\n"
+            "Use your preloaded AGENTS.md system cheatsheet directly — DO NOT waste turns exploring config files when IPC commands are already known.\n"
+            "Combine independent commands in one shell call where practical, execute cleanly, verify the final state once, and return structured JSON.\n"
+            f"{desktop_rule}\n{self.language_instruction()}\n\n"
+            f"USER REQUEST:\n{user_task}\n\n"
+            "Respond ONLY with valid JSON:\n"
+            "{\n"
+            '  "verdict": "complete" | "needs_polish" | "needs_user_input",\n'
+            '  "final_reply": "Concise verified answer/summary directly for the user",\n'
+            '  "question_for_user": "If verdict=needs_user_input, clear question; else empty",\n'
+            '  "polish_hint": "If verdict=needs_polish, what still needs fixing; else empty"\n'
+            "}"
+        )
+
+        conv_id = None
+        next_prompt = exec_prompt
+        for attempt in range(1, 4):
+            ok, out, err, eff_m, conv_id = self.run_agy(
+                "executor",
+                "Meow AI",
+                next_prompt,
+                self.worker_model,
+                conversation_id=conv_id,
+            )
+            if not ok:
+                emit("task_error", message=err or ("Thực thi thất bại." if self.is_vi() else "Execution failed."))
+                return
+
+            parsed = extract_json_block(out)
+            if parsed is None:
+                # Model returned a clean plain markdown answer without JSON wrapper -> treat as complete
+                emit("assistant_message", model=eff_m, title="Kết quả đã xác minh" if self.is_vi() else "Verified Result", text=out)
+                emit("task_complete", progress=100, summary=out)
+                self.logger.write("SINGLE FAST COMPLETED.", "\033[1;32m")
+                return
+
+            verdict = str(parsed.get("verdict") or "complete").lower()
+            final_reply = str(parsed.get("final_reply") or out).strip()
+            question = str(parsed.get("question_for_user") or "").strip()
+            polish_hint = str(parsed.get("polish_hint") or "").strip()
+
+            if verdict == "complete":
+                emit("assistant_message", model=eff_m, title="Kết quả đã xác minh" if self.is_vi() else "Verified Result", text=final_reply)
+                emit("task_complete", progress=100, summary=final_reply)
+                self.logger.write("SINGLE FAST COMPLETED.", "\033[1;32m")
+                return
+
+            if verdict == "needs_polish" and attempt < 3:
+                emit("engine_step", worker="Meow AI", step=attempt, detail=f"Tự động hoàn thiện (Lượt {attempt})" if self.is_vi() else f"Auto-polish pass #{attempt}")
+                next_prompt = f"Continue fixing the remaining issue cleanly and re-verify:\n{polish_hint or final_reply}\n\nRespond with the same JSON schema."
+                continue
+
+            if not self.ask_on_invalid:
+                emit("task_error", message=final_reply)
+                return
+
+            action, user_txt = self.wait_user_reply(
+                question or final_reply,
+                final_reply,
+                polish_hint,
+                eff_m,
+            )
+            if action == "accept":
+                emit("assistant_message", model=eff_m, title="Kết quả đã xác nhận" if self.is_vi() else "Accepted Result", text=final_reply)
+                emit("task_complete", progress=100, summary=final_reply)
+                return
+            elif action == "abort":
+                emit("task_error", message="Đã hủy theo yêu cầu." if self.is_vi() else "Aborted by user.")
+                return
+            else:
+                next_prompt = f"User guidance:\n{user_txt or polish_hint}\n\nFinish and verify cleanly, responding with the JSON schema."
+
+        emit("task_error", message="Đã vượt quá số lượt tự động." if self.is_vi() else "Exceeded max attempts.")
 
     def run_collaborators(self, user_task: str, specs: list[dict]) -> list[dict]:
         if not specs:
             return []
 
         results = []
-        specs = specs[:4]
+        specs = specs[:3]  # Tight cap: max 3 parallel engineering tracks (no redundant verifier worker)
         parallel_specs = [s for s in specs if s.get("parallel", True)]
         seq_specs = [s for s in specs if not s.get("parallel", True)]
 
@@ -555,14 +677,12 @@ class Orchestrator:
             rname = str(spec.get("role_name") or f"Specialist {idx + 1}")
             sub_prompt = str(spec.get("prompt") or user_task)
             full_prompt = (
-                f"You are an internal execution specialist ({rname}) assisting the Coordinator.\n"
-                "Your findings and work will be verified and synthesized by the Coordinator before replying to the user.\n"
-                "Execute your assigned scope thoroughly and concisely report exact commands run, files touched, and concrete facts.\n\n"
-                f"{self.desktop_context()}\n"
+                f"Role: {rname}. Execute your assigned scope cleanly and verify outputs before reporting.\n"
+                "Use preloaded AGENTS.md facts directly (no blind file exploration).\n\n"
                 f"USER REQUEST:\n{user_task}\n\n"
-                f"ASSIGNED SCOPE ({rname}):\n{sub_prompt}"
+                f"SCOPE:\n{sub_prompt}"
             )
-            ok_w, out_w, err_w, eff_m = self.run_agy("executor", rname, full_prompt, self.worker_model)
+            ok_w, out_w, err_w, eff_m, _ = self.run_agy("executor", rname, full_prompt, self.worker_model)
             return {
                 "role_name": rname,
                 "ok": ok_w,
@@ -572,13 +692,9 @@ class Orchestrator:
             }
 
         if parallel_specs and not self.stop_requested:
-            # Resolve initial shared worker model BEFORE spawning threads so N threads don't stampede a dead model
             self.resolve_initial_model("executor", self.worker_model)
-            with ThreadPoolExecutor(max_workers=min(4, len(parallel_specs))) as pool:
-                fut_map = {
-                    pool.submit(execute_one, i, s): i
-                    for i, s in enumerate(parallel_specs)
-                }
+            with ThreadPoolExecutor(max_workers=len(parallel_specs)) as pool:
+                fut_map = {pool.submit(execute_one, i, s): i for i, s in enumerate(parallel_specs)}
                 indexed_res = {}
                 for fut in as_completed(fut_map):
                     i = fut_map[fut]
@@ -599,96 +715,45 @@ class Orchestrator:
             if self.stop_requested:
                 break
             prior_ctx = "\n\n".join(
-                f"[{r['role_name']} ({'OK' if r['ok'] else 'ERR'})]:\n{r['output'][:2000]}"
+                f"[{r['role_name']} ({'OK' if r['ok'] else 'ERR'})]:\n{r['output'][:1500]}"
                 for r in results
             )
             enriched = dict(s)
             if prior_ctx:
-                enriched["prompt"] = f"{s.get('prompt', '')}\n\nPREVIOUS SPECIALIST RESULTS:\n{prior_ctx}"
+                enriched["prompt"] = f"{s.get('prompt', '')}\n\nPRIOR RESULTS:\n{prior_ctx}"
             results.append(execute_one(len(parallel_specs) + j, enriched))
 
         return results
 
-    def run_task(self, user_task: str):
-        self.logger.write(f"USER REQUEST: {user_task}", "\033[1;34m")
-        emit(
-            "phase",
-            phase="planning",
-            progress=12,
-            detail="Đang phân tích yêu cầu..." if self.is_vi() else "Classifying request...",
-        )
-
-        triage_prompt = (
-            "You are Meow AI (Primary Coordinator) on a local Arch Linux + Hyprland desktop.\n"
-            "Classify the USER REQUEST carefully:\n"
-            '- Use `"mode": "direct"` for simple questions, definitions, general knowledge, quick code snippets, math, or conversation needing NO commands, file inspection, editing, or GUI control.\n'
-            '- Use `"mode": "delegate"` whenever execution, file/code inspection, feature building, testing, or GUI/browser desktop control (`caelestia-desktop`) is needed. Scale `"collaborators"` cleanly from 1 to 4:\n'
-            "  * Small read/check/open task: 1 collaborator.\n"
-            "  * Moderate fix + verification, or browser search + summary app: 2 collaborators (`Research/Action`, `Verification/Summary`).\n"
-            "  * Complex feature development: 3–4 collaborators (`Architecture/UI`, `Backend/Service`, `Integration/QA`) with `parallel: false` for QA depending on prior edits.\n\n"
-            f"{self.language_instruction()}\n\n"
-            f"{self.desktop_context()}\n"
-            f"USER REQUEST:\n{user_task}\n\n"
-            "Respond ONLY with valid JSON:\n"
-            "{\n"
-            '  "mode": "direct" or "delegate",\n'
-            '  "direct_answer": "Full helpful response if mode=direct, else empty string",\n'
-            '  "plan_summary": "1 concise sentence explaining what Meow AI is orchestrating if mode=delegate",\n'
-            '  "success_criteria": "Exact checks to verify perfection if mode=delegate",\n'
-            '  "collaborators": [\n'
-            '    {"role_name": "Short role title", "prompt": "Detailed actionable instruction", "parallel": true}\n'
-            "  ]\n"
-            "}"
-        )
-
-        ok, triage_raw, err, eff_coord = self.run_agy("coordinator", "Coordinator", triage_prompt, self.supervisor_model)
-        if not ok:
-            emit("task_error", message=err or ("Không thể phân tích yêu cầu." if self.is_vi() else "Failed to analyze request."))
+    def run_multi_agent(self, user_task: str, triage: dict, eff_coord: str):
+        """Tier 3 Heavy Engineering / Multi-Workstream Team + Coordinator Audit."""
+        collaborators = (triage.get("collaborators") or [])[:3]
+        if not collaborators:
+            self.run_single_fast(user_task, str(triage.get("plan_summary") or ""))
             return
 
-        triage = extract_json_block(triage_raw) or {}
-        mode = str(triage.get("mode") or "delegate").lower()
-
-        if mode == "direct" and triage.get("direct_answer"):
-            answer = str(triage["direct_answer"]).strip()
-            self.logger.write("Triage -> direct answer.", "\033[1;36m")
-            emit(
-                "assistant_message",
-                model=eff_coord,
-                title="Trả lời trực tiếp" if self.is_vi() else "Direct Response",
-                text=answer,
-            )
-            emit("task_complete", progress=100, summary=answer)
-            self.logger.write("DIRECT RESPONSE COMPLETED.", "\033[1;32m")
-            return
-
-        collaborators = triage.get("collaborators") or []
-        if not isinstance(collaborators, list) or len(collaborators) == 0:
-            collaborators = [{"role_name": "Executor", "prompt": user_task, "parallel": True}]
-        collaborators = collaborators[:4]
-
-        collab_count = len(collaborators)
         plan_summary = str(triage.get("plan_summary") or "").strip() or (
-            f"Đang điều phối {collab_count} luồng xử lý." if self.is_vi() else f"Coordinating {collab_count} execution track(s)."
+            f"Đang điều phối {len(collaborators)} phân hệ chuyên trách."
+            if self.is_vi()
+            else f"Coordinating {len(collaborators)} specialist tracks."
         )
-        success_criteria = str(triage.get("success_criteria") or "All requested changes and checks succeed cleanly without errors.")
-        role_names = ", ".join(str(c.get("role_name", "Task")) for c in collaborators)
+        success_criteria = str(triage.get("success_criteria") or "All changes pass checks & match request cleanly.")
+        role_names = ", ".join(str(c.get("role_name", "Track")) for c in collaborators)
         emit(
             "assistant_message",
             model=eff_coord,
-            title=f"Điều phối ({collab_count} phân hệ)" if self.is_vi() else f"Plan ({collab_count} track{'s' if collab_count > 1 else ''})",
+            title=f"Điều phối ({len(collaborators)} phân hệ)" if self.is_vi() else f"Plan ({len(collaborators)} tracks)",
             text=f"{plan_summary}\n[{role_names}]",
         )
-        self.logger.write(f"Triage -> delegate ({collab_count}): {role_names}", "\033[35m")
+        self.logger.write(f"Triage -> multi ({len(collaborators)}): {role_names}", "\033[35m")
 
-        # Autonomous polish loop + optional user confirmation
         max_auto_polish = 2
         polish_used = 0
-        max_total_rounds = 4
         current_specs = collaborators
-        accumulated_notes = []
+        accumulated = []
+        coord_conv_id = None
 
-        for round_idx in range(1, max_total_rounds + 1):
+        for round_idx in range(1, 4):
             if self.stop_requested:
                 break
 
@@ -708,8 +773,8 @@ class Orchestrator:
                 break
 
             for r in collab_results:
-                accumulated_notes.append(
-                    f"[Round {round_idx} • {r['role_name']} ({'SUCCESS' if r['ok'] else 'ERROR: ' + r['error']})]\n{r['output']}"
+                accumulated.append(
+                    f"[Round {round_idx} • {r['role_name']} ({'OK' if r['ok'] else 'ERR: ' + r['error']})]\n{r['output']}"
                 )
 
             emit(
@@ -718,133 +783,122 @@ class Orchestrator:
                 progress=86,
                 detail="Đang kiểm chứng & tổng hợp..." if self.is_vi() else "Verifying & synthesizing outcome...",
             )
-            self.logger.write("Coordinator verifying collaborator outputs...", "\033[1;35m")
+            self.logger.write("Coordinator verifying & synthesizing outputs...", "\033[1;35m")
 
-            bundled_reports = "\n\n".join(accumulated_notes[-6:])
-
-            synthesis_prompt = (
-                "You are Meow AI (Primary Coordinator). The background execution specialists finished Round "
-                f"{round_idx} (autonomous polish remaining: {max_auto_polish - polish_used}).\n"
-                "Verify actual files, lint/test outputs, or desktop window state yourself using tools if appropriate, and choose ONE verdict:\n"
-                '1. `"complete"`: Everything requested is genuinely verified, clean, and ready for the user. Write a polished `final_reply` directly to the user.\n'
-                '2. `"needs_polish"`: ONLY if an objective error/lint failure/incomplete detail exists that you can fix automatically right now without bothering the user AND autonomous polish remains > 0! Provide `polish_prompt` with exact fix instructions.\n'
-                '3. `"needs_user_input"`: Genuine ambiguity, external blocker (quota/missing login/destructive action), or still failing after auto-polish. Write `question_for_user`.\n\n'
-                "CRITICAL: Never mention 'Agent A/B/C' or internal collaborators in `final_reply`.\n\n"
+            bundled = "\n\n".join(accumulated[-5:])
+            synth_prompt = (
+                f"Coordinator Audit (Round {round_idx}, auto-polish left: {max_auto_polish - polish_used}).\n"
+                "Verify actual edited files/tests/status cleanly and choose ONE verdict:\n"
+                '- `"complete"`: Everything passes & satisfies the request; write `final_reply` directly for the user.\n'
+                '- `"needs_polish"`: Fixable lint/code/test error exists & polish > 0; set `polish_prompt`.\n'
+                '- `"needs_user_input"`: Ambiguous or external blocker; set `question_for_user`.\n'
                 f"{self.language_instruction()}\n\n"
                 f"USER REQUEST:\n{user_task}\n\n"
                 f"SUCCESS CRITERIA:\n{success_criteria}\n\n"
-                f"INTERNAL SPECIALIST OUTPUTS:\n{bundled_reports}\n\n"
-                "Respond ONLY with valid JSON:\n"
-                "{\n"
-                '  "verdict": "complete" | "needs_polish" | "needs_user_input",\n'
-                '  "final_reply": "Complete synthesized response for user if verdict=complete, or issue summary otherwise",\n'
-                '  "polish_prompt": "If verdict=needs_polish, exact instructions for fixer specialist",\n'
-                '  "question_for_user": "If verdict=needs_user_input, clear question for user"\n'
-                "}"
+                f"SPECIALIST OUTPUTS:\n{bundled}\n\n"
+                'Respond ONLY with JSON: {"verdict": "...", "final_reply": "...", "polish_prompt": "...", "question_for_user": "..."}'
             )
 
-            ok_v, synth_raw, err_v, eff_coord2 = self.run_agy("coordinator", "Coordinator Verify", synthesis_prompt, self.supervisor_model)
+            ok_v, synth_raw, err_v, eff_c2, coord_conv_id = self.run_agy(
+                "coordinator",
+                "Coordinator Verify",
+                synth_prompt,
+                self.supervisor_model,
+                conversation_id=coord_conv_id,
+            )
             if not ok_v:
                 emit("task_error", message=err_v or ("Kiểm chứng thất bại." if self.is_vi() else "Verification failed."))
                 return
 
             synth = extract_json_block(synth_raw) or {}
-            verdict = str(synth.get("verdict") or ("complete" if all(r["ok"] for r in collab_results) else "needs_user_input")).lower()
-            final_reply = str(synth.get("final_reply") or synth_raw or "Done.").strip()
+            verdict = str(synth.get("verdict") or "complete").lower()
+            final_reply = str(synth.get("final_reply") or synth_raw).strip()
             polish_prompt = str(synth.get("polish_prompt") or "").strip()
             question = str(synth.get("question_for_user") or "").strip()
 
             self.logger.write(f"Coordinator Verdict -> {verdict}", "\033[1;35m")
 
             if verdict == "complete":
-                emit(
-                    "assistant_message",
-                    model=eff_coord2,
-                    title="Kết quả đã xác minh" if self.is_vi() else "Verified Result",
-                    text=final_reply,
-                )
+                emit("assistant_message", model=eff_c2, title="Kết quả đã xác minh" if self.is_vi() else "Verified Result", text=final_reply)
                 emit("task_complete", progress=100, summary=final_reply)
                 self.logger.write("TASK COMPLETED SUCCESSFULLY.", "\033[1;32m")
                 return
 
             if verdict == "needs_polish" and polish_used < max_auto_polish and polish_prompt:
                 polish_used += 1
-                self.logger.write(f"Auto-polish #{polish_used}: {polish_prompt[:140]}", "\033[1;36m")
-                emit(
-                    "engine_step",
-                    worker="Coordinator QA",
-                    step=polish_used,
-                    detail=f"Tự động tối ưu & sửa lỗi (Vòng {polish_used})" if self.is_vi() else f"Auto-polish & fix pass #{polish_used}",
-                )
-                current_specs = [{
-                    "role_name": f"Polish & Fix #{polish_used}",
-                    "prompt": polish_prompt,
-                    "parallel": True,
-                }]
+                emit("engine_step", worker="Coordinator QA", step=polish_used, detail=f"Tự động tối ưu & sửa lỗi (Vòng {polish_used})" if self.is_vi() else f"Auto-polish #{polish_used}")
+                current_specs = [{"role_name": f"Polish #{polish_used}", "prompt": polish_prompt, "parallel": True}]
                 continue
 
             if not self.ask_on_invalid:
                 emit("task_error", message=final_reply)
                 return
 
-            prompt_question = question or (
-                f"Hệ thống phát hiện vấn đề cần bạn quyết định:\n{final_reply}\n\nBạn muốn thử lại, chấp nhận kết quả hiện tại, hay hủy?"
-                if self.is_vi()
-                else f"Verification flagged an issue:\n{final_reply}\n\nWould you like to retry, accept anyway, or abort?"
-            )
-            emit(
-                "phase",
-                phase="waiting_user",
-                progress=80,
-                detail="Đang chờ bạn xác nhận..." if self.is_vi() else "Waiting for your confirmation...",
-            )
-            emit(
-                "user_question",
-                model=eff_coord2,
-                verification=final_reply,
-                question=prompt_question,
-                suggestedFix=polish_prompt,
-            )
-            self.logger.write(f"ASKING USER: {prompt_question}", "\033[1;33m")
+            action, user_txt = self.wait_user_reply(question or final_reply, final_reply, polish_prompt, eff_c2)
+            if action == "accept":
+                emit("assistant_message", model=eff_c2, title="Kết quả đã xác nhận" if self.is_vi() else "Accepted Result", text=final_reply)
+                emit("task_complete", progress=100, summary=final_reply)
+                return
+            elif action == "abort":
+                emit("task_error", message="Đã hủy theo yêu cầu." if self.is_vi() else "Aborted by user.")
+                return
+            else:
+                current_specs = [{"role_name": "Guided Fixer", "prompt": user_txt or polish_prompt, "parallel": True}]
 
-            while not self.stop_requested:
-                try:
-                    reply = self.inbox.get(timeout=0.5)
-                except queue.Empty:
-                    continue
+        emit("task_error", message="Đã vượt quá số lượt tối đa." if self.is_vi() else "Reached max rounds.")
 
-                rtype = reply.get("type")
-                if rtype == "stop":
-                    self.stop_requested = True
-                    emit("task_error", message="Đã dừng theo yêu cầu." if self.is_vi() else "Stopped by user.")
-                    return
-                if rtype == "user_reply":
-                    action = reply.get("action", "retry")
-                    user_text = str(reply.get("text", "")).strip()
-                    self.logger.write(f"USER REPLY ({action}): {user_text}", "\033[1;34m")
+    def run_task(self, user_task: str):
+        self.logger.write(f"USER REQUEST: {user_task}", "\033[1;34m")
+        emit(
+            "phase",
+            phase="planning",
+            progress=12,
+            detail="Đang phân loại yêu cầu..." if self.is_vi() else "Routing request...",
+        )
 
-                    if action == "accept":
-                        emit(
-                            "assistant_message",
-                            model=eff_coord2,
-                            title="Kết quả đã xác nhận" if self.is_vi() else "Accepted Result",
-                            text=final_reply,
-                        )
-                        emit("task_complete", progress=100, summary=final_reply)
-                        return
-                    elif action == "abort":
-                        emit("task_error", message="Đã hủy theo xác nhận." if self.is_vi() else "Aborted by user.")
-                        return
-                    else:
-                        guidance = user_text or polish_prompt or "Fix remaining issues and verify thoroughly."
-                        current_specs = [{
-                            "role_name": "Guided Fixer",
-                            "prompt": f"Previous findings:\n{final_reply}\n\nUSER GUIDANCE:\n{guidance}\n\nApply fixes cleanly and verify.",
-                            "parallel": True,
-                        }]
-                        break
+        # Ultra-lean `--effort low` classification (<3-4s)
+        triage_prompt = (
+            "You are Meow AI Router. Classify USER REQUEST into ONE mode:\n"
+            '- `"direct"`: Simple Q&A, knowledge, math, chat needing ZERO commands/files/GUI. Fill `direct_answer`.\n'
+            '- `"single"`: Operational, browser/YouTube, system mode switch, quick inspection, or small edit (~1-2 related actions that run fastest in ONE continuous agent). Fill 1-sentence `plan_summary`.\n'
+            '- `"multi"`: Large feature engineering (UI + service + tests), multi-file refactoring, or deep parallel research -> fill 2-3 `collaborators` (NEVER add a redundant verifier worker; set `parallel: true` for independent tasks).\n'
+            f"{self.language_instruction()}\n\n"
+            f"USER REQUEST:\n{user_task}\n\n"
+            'Respond ONLY with JSON:\n'
+            '{"mode":"direct"|"single"|"multi","direct_answer":"","plan_summary":"","success_criteria":"","collaborators":[{"role_name":"","prompt":"","parallel":true}]}'
+        )
 
-        emit("task_error", message="Đã vượt quá số lượt tối đa." if self.is_vi() else "Reached maximum execution rounds.")
+        router_model = self.fast_router_model(self.supervisor_model)
+        ok, triage_raw, err, eff_coord, _ = self.run_agy(
+            "router",
+            "Router",
+            triage_prompt,
+            router_model,
+        )
+        if not ok:
+            emit("task_error", message=err or ("Không thể phân tích yêu cầu." if self.is_vi() else "Failed to analyze request."))
+            return
+
+        triage = extract_json_block(triage_raw) or {}
+        mode = str(triage.get("mode") or "single").lower()
+
+        if mode == "direct" and triage.get("direct_answer"):
+            ans = str(triage["direct_answer"]).strip()
+            self.logger.write("Triage -> direct.", "\033[1;36m")
+            emit("assistant_message", model=eff_coord, title="Trả lời trực tiếp" if self.is_vi() else "Direct Response", text=ans)
+            emit("task_complete", progress=100, summary=ans)
+            self.logger.write("DIRECT RESPONSE COMPLETED.", "\033[1;32m")
+            return
+
+        if mode == "multi" and triage.get("collaborators"):
+            self.run_multi_agent(user_task, triage, eff_coord)
+            return
+
+        plan_summary = str(triage.get("plan_summary") or "").strip() or (
+            "Đang xử lý yêu cầu trong một phiên hợp nhất..." if self.is_vi() else "Executing in single unified session..."
+        )
+        self.logger.write(f"Triage -> single fast lane: {plan_summary}", "\033[1;36m")
+        self.run_single_fast(user_task, plan_summary)
 
 
 def main():
