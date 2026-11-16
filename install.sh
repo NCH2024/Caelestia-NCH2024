@@ -70,7 +70,7 @@ backup_if_exists "$HOME/.config/hypr"
 mkdir -p "$HOME/.config/hypr"
 cp -a "$REPO_DIR/config/hypr/." "$HOME/.config/hypr/"
 
-for f in shell.json hypr-user.lua hypr-vars.lua equalizer.json extra.json optimizer.json ai_automation.json; do
+for f in shell.json hypr-user.lua hypr-vars.lua equalizer.json extra.json optimizer.json ai_automation.json ai_knowledge_seed.json; do
     if [[ -f "$REPO_DIR/config/caelestia/$f" ]]; then
         [[ -f "$HOME/.config/caelestia/$f" ]] && cp -a "$HOME/.config/caelestia/$f" "$HOME/.config/caelestia/${f}.bak-${TS}"
         cp -a "$REPO_DIR/config/caelestia/$f" "$HOME/.config/caelestia/$f"

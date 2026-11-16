@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 KB_PATH = Path.home() / ".local" / "share" / "caelestia" / "ai" / "knowledge.json"
+REPO_SEED_PATH = Path.home() / ".config" / "caelestia" / "ai_knowledge_seed.json"
 MAX_RECIPES = 20
 
 SEED_RECIPES = [
@@ -56,8 +57,25 @@ def load_kb() -> dict:
                 return data
     except Exception:
         pass
+    seed = list(SEED_RECIPES)
+    try:
+        if REPO_SEED_PATH.exists():
+            sd = json.loads(REPO_SEED_PATH.read_text(encoding="utf-8"))
+            if isinstance(sd, dict) and isinstance(sd.get("recipes"), list) and sd["recipes"]:
+                seed = [
+                    {
+                        "id": str(r.get("id") or ""),
+                        "topic": str(r.get("topic") or ""),
+                        "lesson": str(r.get("lesson") or ""),
+                        "success_count": int(r.get("success_count", 2)),
+                        "last_used": int(r.get("last_used", 0)),
+                    }
+                    for r in sd["recipes"] if r.get("topic") and r.get("lesson")
+                ][:MAX_RECIPES] or seed
+    except Exception:
+        pass
     return {
-        "recipes": list(SEED_RECIPES),
+        "recipes": seed,
         "stats": {"total_runs": 0, "success_runs": 0, "avg_sec": 0.0, "last_updated": 0},
     }
 
@@ -112,7 +130,7 @@ def record_run(user_task: str, elapsed_sec: float, ok: bool, summary: str, trace
     st["avg_sec"] = round(((prev_avg * n) + max(0.0, float(elapsed_sec))) / (n + 1), 2)
     st["last_updated"] = int(time.time())
 
-    low = (user_task + " " + (summary or "")).lower()
+    low = (user_task + " " + (summary or "") + " " + " ".join(trace_notes or [])).lower()
     if ok:
         if "youtube" in low and ("yt-play" in low or "corked: no" in low):
             upsert_recipe(data, "Verify YouTube playback in Firefox", SEED_RECIPES[0]["lesson"], "yt_audio_verify")
@@ -120,6 +138,28 @@ def record_run(user_task: str, elapsed_sec: float, ok: bool, summary: str, trace
             upsert_recipe(data, "LibreOffice Flatpak file access & Word styling", SEED_RECIPES[1]["lesson"], "flatpak_lo_paths")
         if "night light" in low and "setnightlight" in low:
             upsert_recipe(data, "Toggle Night Light without changing power mode", SEED_RECIPES[2]["lesson"], "nightlight_direct")
+    else:
+        if "privacy" in low or "msn" in low or "cookie" in low:
+            upsert_recipe(
+                data,
+                "Bypass privacy-walled portals (MSN / cookie modals)",
+                "Reject MSN/privacy-wall stubs cleanly (`cares about your privacy`); advance to hits[1..2] direct tech news sites or escalate to Round-2 search_web recovery.",
+                "avoid_privacy_walls",
+            )
+        if ("youtube" in low or "yt_fail" in low or "chưa xác nhận phát" in low) and ("corked" in low or "yt_fail" in low or "chưa xác nhận phát" in low):
+            upsert_recipe(
+                data,
+                "YouTube search chip & Shorts skip rule",
+                "Scan YouTube results with min_y>=245 & title length>=18 chars to skip Shorts/chips; retry hits[1] cleanly before Round-2 fallback.",
+                "yt_skip_chips_shorts",
+            )
+        if "image" in low and ("missing" in low or "thiếu ảnh" in low):
+            upsert_recipe(
+                data,
+                "Guaranteed multi-image & YouTube capture for Word",
+                "Use `web-copy --image-count N` + keyword-filtered DDG `i.js` fallback and `yt-play --screenshot` + `write-docx --images` when multiple images are requested.",
+                "multi_image_docx",
+            )
 
     for item in (learned_items or []):
         if isinstance(item, dict) and item.get("topic") and item.get("lesson"):
@@ -160,6 +200,19 @@ def main():
         print(json.dumps({"ok": True, "count": len(SEED_RECIPES)}))
     elif cmd == "markdown":
         print(format_markdown_section())
+    elif cmd == "export-seed":
+        data = load_kb()
+        out_p = Path(sys.argv[2]) if len(sys.argv) > 2 else (Path.home() / "Caelestia-NCH2024" / "config" / "caelestia" / "ai_knowledge_seed.json")
+        portable = [
+            {"id": r["id"], "topic": r["topic"], "lesson": r["lesson"]}
+            for r in (data.get("recipes") or [])[:MAX_RECIPES]
+        ]
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        out_p.write_text(json.dumps({"recipes": portable}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        print(json.dumps({"ok": True, "exported": len(portable), "path": str(out_p)}))
+    elif cmd == "reflect" and len(sys.argv) >= 6:
+        task_txt, dur_s, ok_s, route_s, summary_s = sys.argv[2], float(sys.argv[3]), sys.argv[4] == "1", sys.argv[5], sys.argv[6] if len(sys.argv) > 6 else ""
+        record_run(task_txt, dur_s, ok_s, summary_s, trace_notes=[f"route={route_s}"])
 
 
 if __name__ == "__main__":

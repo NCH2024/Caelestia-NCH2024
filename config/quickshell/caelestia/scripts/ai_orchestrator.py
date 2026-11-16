@@ -242,8 +242,8 @@ class Orchestrator:
             notes.append(f"Độ sáng màn hình: **{pct}%**" if self.is_vi() else f"Brightness: **{pct}%**")
         return notes
 
-    def _record_and_reflect_async(self, user_task: str, task_start_ts: float, success: bool, route: str, summary: str = "", note: str = "") -> None:
-        """Record verified run stats into knowledge.json and asynchronously reflect if run was slow/failed."""
+    def _record_and_reflect_async(self, user_task: str, task_start_ts: float, success: bool, route: str, summary: str = "", note: str = "", learned_items: list[dict] | None = None) -> None:
+        """Record verified run stats & concrete failure/quality lessons into knowledge.json + AGENTS.md cleanly (never killed on exit)."""
         if knowledge_mgr is None:
             return
         dur = round(max(0.05, time.time() - task_start_ts), 2)
@@ -251,26 +251,9 @@ class Orchestrator:
         if note:
             notes.append(note)
         try:
-            knowledge_mgr.record_run(user_task, dur, success, summary[:300], trace_notes=notes)
+            knowledge_mgr.record_run(user_task, dur, success, summary[:450], trace_notes=notes, learned_items=learned_items)
         except Exception:
             pass
-
-        if (not success or dur > 65.0) and not self.stop_requested:
-            def _reflect():
-                try:
-                    fast_m = self.fast_router_model(self.supervisor_model)
-                    prompt = (
-                        "CRITICAL: Do NOT call ANY tools. Reply immediately with ONE concise English operational rule (<=150 chars) "
-                        "to prevent repeating slowness or failure on this system.\n"
-                        f"Task: {user_task[:220]}\nRoute: {route}, Duration: {dur}s, Success: {success}\nOutcome: {summary[:220]}"
-                    )
-                    ok_r, lesson, _, _, _ = self.run_agy("router", "KB Reflect", prompt, fast_m)
-                    if ok_r and lesson and len(lesson.strip()) >= 12:
-                        topic = f"Optimize {route} workflow"
-                        knowledge_mgr.record_run(user_task, dur, success, summary[:300], learned_items=[{"topic": topic, "lesson": lesson.strip()[:190]}])
-                except Exception:
-                    pass
-            threading.Thread(target=_reflect, daemon=True).start()
 
     def is_vi(self) -> bool:
         if self.chat_language == "vi":
@@ -1364,13 +1347,13 @@ class Orchestrator:
 
         parse_prompt = (
             "CRITICAL: Do NOT call ANY tools (no run_command, no read_file, no search_web). Reply immediately with ONLY valid JSON.\n"
-            "Normalize any spelling typos (e.g. 'Onui'->'One UI', 'saung'->'sau đó', 'Hoyovers'->'HoYoverse') into clean search queries:\n"
+            "Normalize any spelling typos (e.g. 'Onui'->'One UI', 'saung'->'sau đó', 'Hoyovers'->'HoYoverse', 'cào word'->'vào word') into clean queries:\n"
             f"USER REQUEST: {clean_task}\n\n"
             "Return JSON schema:\n"
-            '{"article_query":"concise English/topic news search words for rich articles","image_query":"specific game/entity name for accurate artwork image search","doc_filename":"Clean_Ascii_Name.docx","doc_title":"Clean Document Title",'
-            '"curation_focus":"what key facts/sections the user wants","yt_query":"song/video query if user asked to play YouTube else empty string",'
+            '{"article_query":"concise English/topic news search words for rich articles","article_count":2,"image_query":"specific phone/game/entity name for accurate artwork image search","min_images":1,"doc_filename":"Clean_Ascii_Name.docx","doc_title":"Clean Document Title",'
+            '"curation_focus":"what key facts/sections the user wants","yt_query":"song/video query if user asked to play/open YouTube else empty string","yt_fullscreen":false,"yt_screenshot":false,'
             '"want_image":true,"night_light":null,"mode_id":"","brightness_pct":null}\n'
-            "Rules: prefer rich news queries (e.g. 'HoYoverse upcoming games announcement features' rather than tracker sites); set night_light to true/false only if user explicitly asked for Night Light; set mode_id only if user asked to switch system mode (standard/gaming/work/coding/cinema/sleep)."
+            "Rules: article_count=2..3 if user says 2-3 articles/tong hop; min_images=3 if user asks >=3 images; set yt_fullscreen=true if user asks full screen/mở full video; set yt_screenshot=true if user asks screenshot of YouTube video; set night_light/mode_id only if requested."
         )
         ok_p, raw_p, _, eff_p, _ = self.run_agy("router", "Intent Parse", parse_prompt, fast_m)
         if not ok_p:
@@ -1380,21 +1363,33 @@ class Orchestrator:
         if not article_query:
             return None
         image_query = str(spec.get("image_query") or article_query).strip()
+        article_count = max(1, min(3, int(spec.get("article_count") or (3 if re.search(r"(2\s*(?:đến|-|to)\s*3|nhiều\s+bài)", clean_task.lower()) else 1))))
+        min_images = max(0, min(5, int(spec.get("min_images") or 1)))
+        m_img_num = re.search(r"(\d+)\s*(?:tấm\s*)?(?:ảnh|hình|images?)", clean_task.lower())
+        if m_img_num:
+            min_images = max(min_images, min(5, int(m_img_num.group(1))))
+        want_image = bool(spec.get("want_image")) or min_images >= 1 or bool(re.search(r"\b(ảnh|hình|minh họa|chèn ảnh|image|picture|photo)\b", clean_task.lower()))
+        if want_image and min_images < 1:
+            min_images = 1
+        yt_query = str(spec.get("yt_query") or "").strip()
+        yt_fullscreen = bool(spec.get("yt_fullscreen")) or bool(re.search(r"\b(full(?:\s*màn\s*hình|\s*video|\s*screen)?|toàn màn hình)\b", clean_task.lower()))
+        yt_screenshot = bool(spec.get("yt_screenshot")) or bool(re.search(r"(chụp\s*(?:ảnh\s*)?màn\s*hình.*youtube|screenshot.*youtube)", clean_task.lower()))
+
         doc_filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(spec.get("doc_filename") or "Article_Summary.docx")).strip("_") or "Article_Summary.docx"
         if not doc_filename.lower().endswith(".docx"):
             doc_filename += ".docx"
         doc_title = str(spec.get("doc_title") or article_query).strip()
         curation_focus = str(spec.get("curation_focus") or clean_task).strip()
-        yt_query = str(spec.get("yt_query") or "").strip()
-        want_image = bool(spec.get("want_image")) or bool(re.search(r"\b(ảnh|hình|minh họa|chèn ảnh|image|picture|photo)\b", clean_task.lower()))
         img_out_path = Path("/tmp/ai_article_img.jpg")
-        try:
-            img_out_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        yt_shot_path = Path("/tmp/ai_yt_shot.jpg")
+        for old_p in [img_out_path, yt_shot_path, *Path("/tmp").glob("ai_article_img_*.jpg")]:
+            try:
+                old_p.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         self.logger.write(
-            f"Curated Web->Office pipeline -> query={article_query!r}, img_q={image_query!r}, doc={doc_filename}, yt={yt_query!r}, img={want_image}, nl={spec.get('night_light')}, barrier={final_barrier}",
+            f"Curated Web->Office pipeline -> query={article_query!r} (x{article_count}), img_q={image_query!r} (min={min_images}), doc={doc_filename}, yt={yt_query!r} (full={yt_fullscreen}, shot={yt_screenshot}), barrier={final_barrier}",
             "\033[1;36m",
         )
         emit(
@@ -1402,40 +1397,62 @@ class Orchestrator:
             model=eff_p,
             title="Thực thi trực quan (Đọc web → Chọn lọc → Soạn thảo)" if self.is_vi() else "Human-Like Curated Pipeline",
             text=(
-                f"Đang mở Firefox tìm & đọc bài về **{article_query}**, lọc thông tin trọng tâm vào **{doc_filename}**"
-                + (" (kèm ảnh minh họa)" if want_image else "")
+                f"Đang mở Firefox tìm & đọc {article_count} bài về **{article_query}**, tổng hợp vào **{doc_filename}**"
+                + (f" (chèn {min_images}+ ảnh)" if want_image else "")
                 + (f" và phát **{yt_query}** trên YouTube." if yt_query else ".")
                 if self.is_vi()
-                else f"Browsing **{article_query}**, curating clean content into **{doc_filename}**" + (f", and playing **{yt_query}**." if yt_query else ".")
+                else f"Browsing {article_count} article(s) on **{article_query}**, curating into **{doc_filename}**."
             ),
         )
 
-        # Phase 2: Human-like visible web-copy directly via desktop_ctl (auto-enriches from 2nd article if #1 is thin)
-        emit("phase", phase="working", progress=35, detail="Đang mở Firefox tìm, cuộn đọc & copy bài viết..." if self.is_vi() else "Browsing & scrolling article in Firefox...")
+        # Phase 2: Human-like visible web-copy across N articles (skips privacy walls/SPAs & grabs N verified images)
+        emit("phase", phase="working", progress=35, detail="Đang mở Firefox tìm, cuộn đọc & copy bài viết..." if self.is_vi() else "Browsing & scrolling articles in Firefox...")
         emit("engine_start", role="executor", label="Browser", model="local-visual")
-        emit("engine_step", worker="Browser", step=1, detail=f"Mở Firefox tìm & cuộn đọc: {article_query}")
-        wc_cmd = ["caelestia-desktop", "web-copy", article_query, "--scrolls", "2", "--agent", "Browser"]
+        emit("engine_step", worker="Browser", step=1, detail=f"Mở Firefox tìm & tổng hợp {article_count} bài: {article_query}")
+        wc_cmd = [
+            "caelestia-desktop", "web-copy", article_query,
+            "--scrolls", "2",
+            "--articles", str(article_count),
+            "--agent", "Browser",
+        ]
         if want_image:
-            wc_cmd += ["--save-image", str(img_out_path), "--image-query", image_query]
-        wc_res = subprocess.run(
-            wc_cmd,
-            capture_output=True,
-            text=True,
-            timeout=55,
-        )
+            wc_cmd += ["--save-image", str(img_out_path), "--image-count", str(min_images), "--image-query", image_query]
+        wc_res = subprocess.run(wc_cmd, capture_output=True, text=True, timeout=75)
         if wc_res.returncode == 2:
             emit("task_error", message="Trang tìm kiếm yêu cầu xác minh CAPTCHA/người thật — AI đã dừng theo quy tắc an toàn." if self.is_vi() else "Blocked by CAPTCHA verification.")
             return "__ABORTED__"
-        if wc_res.returncode != 0:
-            self.logger.write(f"web-copy missed ({wc_res.stdout.strip()}); handing off cleanly.", "\033[33m")
-            return None
 
         wc_info = extract_json_block(wc_res.stdout) or {}
         raw_path = Path(wc_info.get("raw_file") or "/tmp/ai_web_copied.txt")
-        raw_text = raw_path.read_text(encoding="utf-8") if raw_path.exists() else subprocess.run(["wl-paste", "--no-newline"], capture_output=True, text=True).stdout
-        raw_trimmed = raw_text[:11000]
+        raw_text = raw_path.read_text(encoding="utf-8") if (wc_res.returncode == 0 and raw_path.exists()) else ""
+        raw_trimmed = raw_text[:13000]
+        saved_imgs = [p for p in (wc_info.get("images") or ([wc_info.get("image_file")] if wc_info.get("image_file") else [])) if p and Path(p).exists()]
 
-        # Phase 3: Parallel AI Content Curation (uses full worker_model for rich non-superficial quality!) + YouTube yt-play
+        def _escalate_round2(reason: str) -> str:
+            """True adaptive Round-2 recovery using learned KB + full AI tools when Round-1 visual pipeline hit an obstacle."""
+            self.logger.write(f"Round-1 obstacle detected ({reason}); recording lesson & escalating to Round-2 recovery...", "\033[33m")
+            self._record_and_reflect_async(user_task, task_start_ts, False, "curated_round1_obstacle", reason, note=reason)
+            emit(
+                "engine_step",
+                worker="Meow AI",
+                step=2,
+                detail=f"Phát hiện trở ngại ({reason[:55]}) — suy luận hướng thay thế (Lượt 2)...",
+            )
+            recovery_prompt = (
+                f"ROUND-1 PIPELINE OBSTACLE: {reason}\n"
+                "Apply your preloaded ~/AGENTS.md Section 5 Self-Learned Recipes & complete EVERY remaining requirement cleanly with tools now!\n"
+                f"- If MSN/privacy modal blocked Firefox, navigate to reliable open tech/news portals (`gsmarena.com`, `sammobile.com`, `9to5google.com`, `search_web`) to synthesize {article_count} real articles in fluent Vietnamese.\n"
+                f"- Ensure at least {min_images} accurate topic images + {'YouTube fullscreen screenshot' if yt_screenshot else 'artwork'} are saved under `/tmp/ai_img_*.jpg` and embedded cleanly via `caelestia-desktop write-docx ~/Documents/{doc_filename} --title \"{doc_title}\" --file /tmp/curated_body.md --images ...`.\n"
+                + (f"- Play YouTube video `{yt_query}` via `caelestia-desktop yt-play \"{yt_query}\"{' --fullscreen' if yt_fullscreen else ''}{' --screenshot /tmp/ai_yt_shot.jpg' if yt_screenshot else ''}` and verify `Corked: no`.\n" if yt_query else "")
+                + f"\nORIGINAL USER REQUEST:\n{clean_task}"
+            )
+            self.run_single_fast(recovery_prompt, "Đang chuyển hướng xử lý thông minh ở Lượt 2 dựa trên tri thức hệ thống...", final_barrier=final_barrier, task_start_ts=task_start_ts)
+            return "__ABORTED__"
+
+        if wc_res.returncode != 0 or len(raw_text.strip()) < 400:
+            return _escalate_round2(f"web-copy blocked or empty ({wc_info.get('error') or 'privacy_or_empty'})")
+
+        # Phase 3: Parallel AI Content Curation (full worker_model!) + YouTube yt-play (+ optional fullscreen/screenshot)
         emit("phase", phase="working", progress=62, detail="Đang chọn lọc & biên tập nội dung đẹp cho Word..." if self.is_vi() else "Curating clean article structure...")
         curated_path = Path("/tmp/ai_curated_doc.md")
         editor_model = self.worker_model or fast_m
@@ -1444,26 +1461,26 @@ class Orchestrator:
             emit("engine_start", role="router", label="Editor AI", model=editor_model)
             emit("engine_step", worker="Editor AI", step=1, detail="Lọc bỏ rác trang web & biên tập chi tiết cấu trúc Word")
             lang_force = (
-                "CRITICAL LANGUAGE RULE: Write the ENTIRE Word document (Main Title, Section Headings, Markdown Table headers & cells, descriptions, notes) in fluent VIETNAMESE (Tiếng Việt), keeping only proper game/studio names in English!"
+                "CRITICAL LANGUAGE RULE: Write the ENTIRE Word document (Main Title, Section Headings, Markdown Table headers & cells, descriptions, notes) in fluent VIETNAMESE (Tiếng Việt), keeping only proper product/brand names in English!"
                 if self.is_vi()
                 else self.language_instruction()
             )
             curate_prompt = (
                 "CRITICAL: Do NOT call ANY tools (no run_command, no write_file, no read_file). Reply IMMEDIATELY with ONLY clean Markdown.\n"
                 "You are a senior editor creating a rich, accurate, well-structured Word document from browsed webpage text.\n"
+                "IF THE SOURCE TEXT CONTAINS ONLY PRIVACY/COOKIE ERRORS OR LACKS TOPIC CONTENT: start your reply with exact token `[OBSTACLE_NEED_RECOVERY]` followed by 1 concise sentence explaining why.\n"
                 f"ORIGINAL USER REQUEST: {clean_task}\n"
                 f"TASK GOAL / FOCUS: {curation_focus}\n"
                 f"SOURCE PAGE HINT: {wc_info.get('page_title') or doc_title}\n"
                 f"{lang_force}\n"
                 "STRICT QUALITY RULES (DO NOT BE SUPERFICIAL):\n"
                 "- Remove ALL leftover navigation menus, ads, cookie notices, 'Skip to content', login buttons, unrelated links.\n"
-                "- Extract ALL relevant titles, dates, genres, platforms, gameplay features, and studio context present in the source text.\n"
-                "- Format cleanly for Word typography using `# Main Title`, `## Section Heading`, `### Subheading`, and concise `- **Point:** explanation` bullets + `## Nguồn tham khảo` at the end.\n"
-                "- Include a clean Markdown comparison table (`| Col 1 | Col 2 |`) summarizing items/games/dates/platforms so it renders as a formatted Word table.\n\n"
+                "- Synthesize substantive specs, comparisons, dates, and highlights across ALL collected articles.\n"
+                "- Format cleanly for Word typography using `# Main Title`, `## Section Heading`, `### Subheading`, concise `- **Point:** detail` bullets, a Markdown comparison table (`| Col 1 | Col 2 |`), and `## Nguồn tham khảo` at the end.\n\n"
                 f"RAW COPIED WEBPAGE TEXT:\n{raw_trimmed}"
             )
             ok_c, curated_md, err_c, _, _ = self.run_agy("router", "Editor AI", curate_prompt, editor_model)
-            if not ok_c or len((curated_md or "").strip()) < 160:
+            if not ok_c or len((curated_md or "").strip()) < 140:
                 return False, err_c or "Curation returned empty text"
             cleaned_md = re.sub(r"^```(?:markdown|md)?\s*|\s*```$", "", curated_md.strip(), flags=re.IGNORECASE)
             curated_path.write_text(cleaned_md, encoding="utf-8")
@@ -1471,7 +1488,12 @@ class Orchestrator:
 
         def run_youtube() -> tuple[bool, dict]:
             emit("engine_step", worker="Browser", step=2, detail=f"Mở & kiểm tra phát YouTube: {yt_query}")
-            res_y = subprocess.run(["caelestia-desktop", "yt-play", yt_query, "--agent", "Browser"], capture_output=True, text=True, timeout=30)
+            yt_cmd = ["caelestia-desktop", "yt-play", yt_query, "--agent", "Browser"]
+            if yt_fullscreen:
+                yt_cmd.append("--fullscreen")
+            if yt_screenshot:
+                yt_cmd += ["--screenshot", str(yt_shot_path)]
+            res_y = subprocess.run(yt_cmd, capture_output=True, text=True, timeout=40)
             info_y = extract_json_block(res_y.stdout) or {}
             return res_y.returncode == 0, info_y
 
@@ -1484,55 +1506,61 @@ class Orchestrator:
             if fut_yt:
                 yt_ok, yt_info = fut_yt.result()
 
+        # Check for curating obstacle OR YouTube failure -> Escalate to Round-2 Adaptive Recovery BEFORE touching Word!
+        if "[OBSTACLE_NEED_RECOVERY]" in (cur_out or "") or "[!WARNING]" in (cur_out or ""):
+            return _escalate_round2("Editor detected cookie/privacy wall or missing article content in copied text")
+        if yt_query and not yt_ok:
+            return _escalate_round2(f"YouTube failed Corked: no check on '{yt_query}' ({yt_info.get('error') or 'no video opened'})")
+        if want_image and len(saved_imgs) < min_images:
+            # Try one direct DDG verified image top-up cleanly in Python before considering obstacle
+            try:
+                import desktop_ctl
+                saved_imgs = desktop_ctl._fetch_verified_ddg_images(image_query, img_out_path, count=min_images, existing=saved_imgs)
+            except Exception:
+                pass
+            if len(saved_imgs) < min_images:
+                return _escalate_round2(f"Missing requested images: got {len(saved_imgs)}/{min_images} for '{image_query}'")
+
+        if yt_screenshot and yt_shot_path.exists():
+            saved_imgs.append(str(yt_shot_path))
+
         if not cur_ok:
             curated_path.write_text(raw_trimmed, encoding="utf-8")
 
-        # Phase 4: Open highest-priority OS Office/Editor, visually paste curated text + write styled .docx (+ embedded image if saved)
+        # Phase 4: Open highest-priority OS Office/Editor & write styled .docx with ALL verified images!
         emit("phase", phase="verifying", progress=84, detail="Đang mở trình soạn thảo, dán & định dạng file Word..." if self.is_vi() else "Pasting curated doc into Office/Editor...")
         docx_out = str(Path.home() / "Documents" / doc_filename)
         emit("engine_start", role="executor", label="Editor", model="local-visual")
-        emit("engine_step", worker="Editor", step=1, detail=f"Mở app & dán bài viết tinh chỉnh -> {doc_filename}")
+        emit("engine_step", worker="Editor", step=1, detail=f"Mở app & nhúng {len(saved_imgs)} ảnh -> {doc_filename}")
         op_cmd = ["caelestia-desktop", "office-paste", "--source-file", str(curated_path), "--docx", docx_out, "--title", doc_title, "--agent", "Editor"]
-        has_img = bool(want_image and img_out_path.exists() and img_out_path.stat().st_size >= 10000)
-        if has_img:
-            op_cmd += ["--image", str(img_out_path)]
-        op_res = subprocess.run(
-            op_cmd,
-            capture_output=True,
-            text=True,
-            timeout=25,
-        )
+        has_img = len(saved_imgs) > 0
+        if saved_imgs:
+            op_cmd += ["--images", ",".join(saved_imgs)]
+        op_res = subprocess.run(op_cmd, capture_output=True, text=True, timeout=25)
         op_info = extract_json_block(op_res.stdout) or {}
         emit("cursor_done", agent="Editor")
 
-        # Instant (<0.1s) OS controls extracted from intent (Night Light / Mode / Brightness)
-        sys_notes = self._apply_quick_system_actions(spec)
+        # If user asked for fullscreen YouTube at the end, bring Firefox fullscreen back cleanly right after saving .docx
+        if yt_query and yt_ok and yt_fullscreen:
+            subprocess.run(["caelestia-desktop", "focus", "firefox", "--agent", "Browser"], capture_output=True)
+            time.sleep(0.25)
 
-        # Phase 5: Hard OS Verification Gate before final barrier
-        if yt_query and not yt_ok:
-            emit(
-                "task_error",
-                message=(
-                    f"Đã biên tập bài viết vào [Word](file://{docx_out}), nhưng YouTube chưa xác nhận phát âm thanh (`Corked: no`) nên đã DỪNG trước bước khóa màn hình."
-                    if self.is_vi()
-                    else f"Saved curated doc {docx_out}, but YouTube playback check failed — halted before lock screen."
-                ),
-            )
-            return "__ABORTED__"
+        sys_notes = self._apply_quick_system_actions(spec)
 
         ok_det, det_msg = self.verify_deterministic_claims(user_task, task_start_ts)
         if not ok_det:
-            emit("task_error", message=det_msg)
-            return "__ABORTED__"
+            return _escalate_round2(det_msg)
 
         summary_lines = [
-            f"- **Bài viết nguồn (đọc trực quan trên Firefox):** {wc_info.get('page_title') or wc_info.get('matched_link')} ({len(raw_text)} ký tự)",
-            f"- **Biên tập & định dạng Word:** Đã lọc bỏ rác web, định dạng tiêu đề/đề mục/bảng biểu sạch đẹp tại [{doc_filename}](file://{docx_out})"
-            + (" **kèm ảnh minh họa chính xác nhúng trong Word**" if has_img else " *(cảnh báo: chưa lấy được ảnh phù hợp từ nguồn web)*")
-            + f" (trình soạn thảo đã mở: `{op_info.get('app') or 'none'}`).",
+            f"- **Bài viết nguồn ({wc_info.get('articles_collected') or 1} bài trên Firefox):** {wc_info.get('page_title') or wc_info.get('matched_link')} ({len(raw_text)} ký tự)",
+            f"- **Biên tập & định dạng Word:** Đã tổng hợp chi tiết bằng Tiếng Việt kèm **{len(saved_imgs)} ảnh nhúng** tại [{doc_filename}](file://{docx_out}) (trình soạn thảo: `{op_info.get('app') or 'none'}`).",
         ]
         if yt_query:
-            summary_lines.append(f"- **YouTube (`Corked: no`):** Đang phát *{yt_info.get('title') or yt_query}*.")
+            summary_lines.append(
+                f"- **YouTube (`Corked: no`):** Đang phát *{yt_info.get('title') or yt_query}*"
+                + (" (toàn màn hình + đã chụp màn hình chèn vào Word)" if yt_fullscreen and yt_screenshot else (" (toàn màn hình)" if yt_fullscreen else ""))
+                + "."
+            )
         for sn in sys_notes:
             summary_lines.append(f"- {sn}")
 

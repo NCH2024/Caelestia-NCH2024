@@ -586,7 +586,9 @@ def cmd_yt_play(args):
         deadline = time.time() + 6.0
         while time.time() < deadline and not hits:
             for cand in candidates:
-                hits = _ocr_scan_once(cand, "firefox", "auto", min_y=185)
+                raw_hits = _ocr_scan_once(cand, "firefox", "auto", min_y=245)
+                long_hits = [h for h in raw_hits if len(h["text"].strip()) >= 18]
+                hits = long_hits or raw_hits
                 if hits:
                     break
             if not hits:
@@ -601,7 +603,7 @@ def cmd_yt_play(args):
         notify_hud(ax if ax >= 0 else target["x"], ay if ay >= 0 else target["y"], "click", lbl, True, args.agent)
         run(["ydotool", "click", BUTTON_CODES["left"]])
 
-    # Wait up to 4.5s for YouTube autoplay to buffer cleanly BEFORE touching 'k' (no accidental pause!)
+    # Wait up to 4.5s for YouTube autoplay; if title didn't leave search page, try hit[1] cleanly
     cur_title = search_title
     is_playing = False
     deadline = time.time() + 4.5
@@ -609,11 +611,27 @@ def cmd_yt_play(args):
         cur_title = _firefox_title()
         _, is_playing = _firefox_audio_corked()
         if is_playing:
-            time.sleep(0.5)
+            time.sleep(0.45)
             _, is_playing = _firefox_audio_corked()
             if is_playing:
                 break
         time.sleep(0.4)
+
+    if not is_playing and _firefox_title() == search_title and len(hits) > 1:
+        with pointer_lock():
+            hypr_focus("firefox")
+            t2 = hits[1]
+            clicked_match = t2["text"]
+            ax, ay = calibrated_move(t2["x"], t2["y"], "Thử video #2", args.agent)
+            notify_hud(ax, ay, "click", "Click video #2", True, args.agent)
+            run(["ydotool", "click", BUTTON_CODES["left"]])
+        deadline_r = time.time() + 4.0
+        while time.time() < deadline_r:
+            cur_title = _firefox_title()
+            _, is_playing = _firefox_audio_corked()
+            if is_playing:
+                break
+            time.sleep(0.4)
 
     watched = bool(cur_title and cur_title != search_title and "youtube" in cur_title.lower())
     if not is_playing and watched:
@@ -629,11 +647,34 @@ def cmd_yt_play(args):
                 break
             time.sleep(0.4)
 
+    shot_saved = ""
+    if is_playing and getattr(args, "fullscreen", False):
+        with pointer_lock():
+            hypr_focus("firefox")
+            time.sleep(0.15)
+            notify_hud(w // 2, h // 2, "key", "Toàn màn hình (f)", False, args.agent)
+            press_combo("f")
+        time.sleep(0.8)
+
+    if is_playing and getattr(args, "screenshot", ""):
+        shot_p = Path(args.screenshot).expanduser()
+        shot_p.parent.mkdir(parents=True, exist_ok=True)
+        raw_shot = str(shot_p.with_suffix(".png"))
+        run(["grim", raw_shot])
+        try:
+            with Image.open(raw_shot) as im:
+                im.convert("RGB").save(shot_p, "JPEG", quality=88)
+            Path(raw_shot).unlink(missing_ok=True)
+            shot_saved = str(shot_p)
+        except Exception:
+            shot_saved = ""
+
     out_obj = {
         "ok": bool(is_playing),
         "playing": bool(is_playing),
         "matched": clicked_match,
         "title": _firefox_title(),
+        "screenshot": shot_saved,
     }
     print(json.dumps(out_obj, ensure_ascii=False))
     if not is_playing:
@@ -668,32 +709,61 @@ def detect_office_app() -> tuple[str | None, list[str] | None, bool]:
     return None, None, False
 
 
-def _build_docx_file(out_path: Path, title: str, body_text: str, image_path: str | None = None) -> int:
-    """Create a richly styled Word .docx (Noto Sans, accent headings, Markdown tables, bullets, optional hero image)."""
+def _build_docx_file(
+    out_path: Path,
+    title: str,
+    body_text: str,
+    image_path: str | None = None,
+    image_paths: list[str] | None = None,
+) -> int:
+    """Create a richly styled Word .docx (Noto Sans, accent headings, Markdown tables, bullets, 1 or multiple embedded images)."""
     import re
     import zipfile
+    from io import BytesIO
     from xml.sax.saxutils import escape
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    has_image = False
-    img_bytes = b""
-    emu_w, emu_h = 5200000, 2925000
-    if image_path and Path(image_path).expanduser().exists():
+    raw_imgs = list(image_paths or [])
+    if image_path and image_path not in raw_imgs:
+        raw_imgs.insert(0, image_path)
+
+    loaded_imgs = []  # list of (rid, fname, bytes, emu_w, emu_h)
+    for idx, ip in enumerate(raw_imgs[:8], start=1):
+        p_img = Path(ip).expanduser()
+        if not p_img.exists():
+            continue
         try:
-            with Image.open(Path(image_path).expanduser()) as im:
+            with Image.open(p_img) as im:
                 im_rgb = im.convert("RGB")
                 if im_rgb.width > 960:
                     nh = max(120, round(im_rgb.height * (960 / im_rgb.width)))
                     im_rgb = im_rgb.resize((960, nh), Image.Resampling.LANCZOS)
-                from io import BytesIO
                 buf = BytesIO()
                 im_rgb.save(buf, "JPEG", quality=86)
-                img_bytes = buf.getvalue()
-                emu_w = 5300000
+                emu_w = 5200000
                 emu_h = max(1200000, round(emu_w * (im_rgb.height / max(1, im_rgb.width))))
-                has_image = True
+                loaded_imgs.append((f"rIdImg{idx}", f"image{idx}.jpg", buf.getvalue(), emu_w, emu_h, idx))
         except Exception:
-            has_image = False
+            continue
+
+    def _render_img_para(rid: str, fname: str, emu_w: int, emu_h: int, doc_id: int) -> str:
+        return (
+            '<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="80" w:after="140"/></w:pPr><w:r><w:drawing>'
+            '<wp:inline distT="0" distB="0" distL="0" distR="0" '
+            'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
+            f'<wp:extent cx="{emu_w}" cy="{emu_h}"/>'
+            f'<wp:docPr id="{doc_id}" name="{fname}"/>'
+            '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+            '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            f'<pic:nvPicPr><pic:cNvPr id="{doc_id}" name="{fname}"/><pic:cNvPicPr/></pic:nvPicPr>'
+            f'<pic:blipFill><a:blip r:embed="{rid}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>'
+            '<a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
+            '<pic:spPr><a:xfrm><a:off x="0" y="0"/>'
+            f'<a:ext cx="{emu_w}" cy="{emu_h}"/></a:xfrm>'
+            '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>'
+            '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>'
+        )
 
     def render_inline_runs(text_line: str, base_sz: int = 22, base_col: str = "1F2937", force_bold: bool = False) -> str:
         tokens = re.split(r"(\*\*[^*]+\*\*)", text_line)
@@ -720,24 +790,9 @@ def _build_docx_file(out_path: Path, title: str, body_text: str, image_path: str
             + "</w:p>"
         )
 
-    if has_image:
-        blocks.append(
-            '<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="80" w:after="160"/></w:pPr><w:r><w:drawing>'
-            '<wp:inline distT="0" distB="0" distL="0" distR="0" '
-            'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
-            f'<wp:extent cx="{emu_w}" cy="{emu_h}"/>'
-            '<wp:docPr id="1" name="Featured Image"/>'
-            '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
-            '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
-            '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
-            '<pic:nvPicPr><pic:cNvPr id="1" name="image1.jpg"/><pic:cNvPicPr/></pic:nvPicPr>'
-            '<pic:blipFill><a:blip r:embed="rIdImg1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>'
-            '<a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
-            '<pic:spPr><a:xfrm><a:off x="0" y="0"/>'
-            f'<a:ext cx="{emu_w}" cy="{emu_h}"/></a:xfrm>'
-            '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>'
-            '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>'
-        )
+    if loaded_imgs:
+        # Place hero image right below title; place additional images cleanly across body sections or gallery
+        blocks.append(_render_img_para(*loaded_imgs[0][:2], loaded_imgs[0][3], loaded_imgs[0][4], loaded_imgs[0][5]))
 
     raw_lines = (body_text or "").splitlines()
     i = 0
@@ -833,6 +888,10 @@ def _build_docx_file(out_path: Path, title: str, body_text: str, image_path: str
                 + "</w:p>"
             )
 
+    if len(loaded_imgs) > 1:
+        for extra in loaded_imgs[1:]:
+            blocks.append(_render_img_para(extra[0], extra[1], extra[3], extra[4], extra[5]))
+
     doc_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
@@ -840,7 +899,7 @@ def _build_docx_file(out_path: Path, title: str, body_text: str, image_path: str
         '<w:sectPr><w:pgMar w:top="1140" w:right="1140" w:bottom="1140" w:left="1140"/></w:sectPr>'
         '</w:body></w:document>'
     )
-    img_ct = '<Default Extension="jpg" ContentType="image/jpeg"/>' if has_image else ""
+    img_ct = '<Default Extension="jpg" ContentType="image/jpeg"/>' if loaded_imgs else ""
     ct_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
@@ -856,19 +915,24 @@ def _build_docx_file(out_path: Path, title: str, body_text: str, image_path: str
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
         '</Relationships>'
     )
+    rel_entries = "".join(
+        f'<Relationship Id="{item[0]}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/{item[1]}"/>'
+        for item in loaded_imgs
+    )
     doc_rels_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        '<Relationship Id="rIdImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.jpg"/>'
+        f'{rel_entries}'
         '</Relationships>'
     )
     with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("[Content_Types].xml", ct_xml)
         zf.writestr("_rels/.rels", rels_xml)
         zf.writestr("word/document.xml", doc_xml)
-        if has_image:
+        if loaded_imgs:
             zf.writestr("word/_rels/document.xml.rels", doc_rels_xml)
-            zf.writestr("word/media/image1.jpg", img_bytes)
+            for item in loaded_imgs:
+                zf.writestr(f"word/media/{item[1]}", item[2])
     return out_path.stat().st_size
 
 
@@ -878,7 +942,8 @@ def cmd_write_docx(args):
     body_text = args.text or ""
     if args.file:
         body_text = Path(args.file).expanduser().read_text(encoding="utf-8")
-    size = _build_docx_file(out_path, args.title or "", body_text, image_path=args.image or None)
+    imgs = [s.strip() for s in (getattr(args, "images", "") or "").split(",") if s.strip()]
+    size = _build_docx_file(out_path, args.title or "", body_text, image_path=args.image or None, image_paths=imgs)
     app_name, cmd, is_wp = detect_office_app()
     office_bin = app_name if is_wp else None
     if args.open and office_bin and cmd:
@@ -920,25 +985,31 @@ def _extract_article_image_from_html(page_url: str, html_txt: str, out_img: Path
     return ""
 
 
-def _fetch_verified_ddg_image(query: str, out_img: Path) -> str:
-    """Fallback: fetch accurate landscape artwork matching query keywords via DuckDuckGo i.js."""
+def _fetch_verified_ddg_images(query: str, base_out: Path, count: int = 1, existing: list[str] | None = None) -> list[str]:
+    """Fallback: fetch up to `count` distinct landscape images matching query keywords via DuckDuckGo i.js."""
     import re
     import urllib.parse
     import urllib.request
 
-    q_words = [w.lower() for w in re.findall(r"[A-Za-z0-9]{3,}", query) if w.lower() not in {"game", "new", "upcoming", "official", "image", "artwork", "the", "and"}]
+    saved = list(existing or [])
+    if len(saved) >= count:
+        return saved[:count]
+    q_words = [w.lower() for w in re.findall(r"[A-Za-z0-9]{2,}", query) if w.lower() not in {"game", "new", "upcoming", "official", "image", "artwork", "the", "and", "news", "specs"}]
     bad_url = ("logo.wine", "lookaside.fbsbx", "favicon", "sprite", "svg")
     try:
         search_u = "https://duckduckgo.com/?q=" + urllib.parse.quote_plus(query) + "&iax=images&ia=images"
         html_txt = urllib.request.urlopen(urllib.request.Request(search_u, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Firefox/131.0"}), timeout=5.0).read().decode("utf-8", errors="ignore")
         m = re.search(r'vqd=["\']?([^"\'&]+)', html_txt)
         if not m:
-            return ""
+            return saved
         vqd = m.group(1)
         api = f"https://duckduckgo.com/i.js?l=us-en&o=json&q={urllib.parse.quote_plus(query)}&vqd={vqd}&f=,,,&p=1"
         raw = urllib.request.urlopen(urllib.request.Request(api, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Firefox/131.0", "Referer": "https://duckduckgo.com/"}), timeout=5.0).read().decode("utf-8", errors="ignore")
         results = json.loads(raw).get("results", [])
-        for r in results[:12]:
+        seen_sizes = set()
+        for r in results[:18]:
+            if len(saved) >= count:
+                break
             title_l = str(r.get("title") or "").lower()
             img_u = str(r.get("image") or "")
             thumb_u = str(r.get("thumbnail") or "")
@@ -946,27 +1017,46 @@ def _fetch_verified_ddg_image(query: str, out_img: Path) -> str:
                 continue
             if any(b in img_u.lower() for b in bad_url):
                 continue
-            # Ensure image title genuinely matches at least 1 core entity word from query
             if q_words and not any(kw in title_l or kw in img_u.lower() for kw in q_words):
                 continue
+            idx = len(saved) + 1
+            out_img = base_out if idx == 1 else base_out.with_name(f"{base_out.stem}_{idx}{base_out.suffix}")
             for try_u in (img_u, thumb_u):
                 if not try_u:
                     continue
                 try:
                     raw_img = urllib.request.urlopen(urllib.request.Request(try_u, headers={"User-Agent": "Mozilla/5.0"}), timeout=4.5).read()
-                    if len(raw_img) >= 12000:
+                    if len(raw_img) >= 12000 and len(raw_img) not in seen_sizes:
                         out_img.parent.mkdir(parents=True, exist_ok=True)
                         out_img.write_bytes(raw_img)
                         with Image.open(out_img) as im:
                             if im.width >= 320 and im.height >= 180:
                                 im.convert("RGB").save(out_img, "JPEG", quality=88)
-                                return str(out_img)
+                                seen_sizes.add(len(raw_img))
+                                saved.append(str(out_img))
+                                break
                         out_img.unlink(missing_ok=True)
                 except Exception:
                     continue
     except Exception:
         pass
-    return ""
+    return saved
+
+
+def _is_privacy_or_stub(text: str) -> bool:
+    low = (text or "").lower()
+    if len(low.strip()) < 450:
+        return True
+    wall_markers = (
+        "microsoft cares about your privacy",
+        "your privacy choices",
+        "accept all cookies",
+        "manage your privacy preferences",
+        "we and our partners process data",
+        "enable javascript to view this page",
+    )
+    hits = sum(1 for w in wall_markers if w in low)
+    return hits >= 1 and len(low) < 2200
 
 
 def _clean_copied_article(clip: str) -> str:
@@ -1030,14 +1120,14 @@ def cmd_web_copy(args):
                 print(json.dumps({"ok": False, "blocked": "captcha", "error": "Anti-bot / CAPTCHA verification detected"}))
                 sys.exit(2)
             ui_junk = ("generate answer", "duckassist", "news for", "images for", "videos for", "people also", "more results", "search instead", "feedback")
-            spa_stubs = ("gamedropradar", "release-date tracker", "countdown")
+            spa_stubs = ("gamedropradar", "release-date tracker", "countdown", "msn.com", "msn —", "msn:")
             for cand in candidates:
                 raw_hits = _ocr_scan_once(cand, "firefox", "auto", min_y=230)
                 non_ui = [
                     item for item in raw_hits
                     if len(item["text"].strip()) >= 18 and not any(j in item["text"].lower() for j in ui_junk)
                 ]
-                # Prefer rich article headlines lower down (skip DuckAssist summary + thin SPA stub sites)
+                # Prefer rich article headlines lower down (skip DuckAssist summary + thin SPA/privacy-wall sites)
                 rich = [item for item in non_ui if not any(s in item["text"].lower() for s in spa_stubs)]
                 pool = rich or non_ui or raw_hits
                 below_ia = [item for item in pool if item["y"] >= 310]
@@ -1051,26 +1141,18 @@ def cmd_web_copy(args):
             print(json.dumps({"ok": False, "error": f"No article link found visually for '{query}'"}))
             sys.exit(1)
 
-        target = hits[0]
-        clicked_title = target["text"]
-        ax, ay = calibrated_move(target["x"], target["y"], "Mở bài viết", args.agent)
-        notify_hud(ax, ay, "click", "Click bài viết", True, args.agent)
-        run(["ydotool", "click", BUTTON_CODES["left"]])
+    target_articles = max(1, min(3, int(getattr(args, "articles", 1) or 1)))
+    img_count_target = max(1, min(6, int(getattr(args, "image_count", 1) or 1)))
+    save_img_base = Path(args.save_image).expanduser() if getattr(args, "save_image", "") else None
 
-    # Wait cleanly for article page load; if still on search page, try fallback hit[1] cleanly
-    time.sleep(2.2)
-    if _firefox_title() == search_title and len(hits) > 1:
+    def _visit_and_extract(hit_obj: dict, idx_slot: int) -> tuple[str, str, str]:
         with pointer_lock():
             hypr_focus("firefox")
-            time.sleep(0.1)
-            target = hits[1]
-            clicked_title = target["text"]
-            ax, ay = calibrated_move(target["x"], target["y"], "Mở bài viết #2", args.agent)
-            notify_hud(ax, ay, "click", "Click bài viết", True, args.agent)
+            time.sleep(0.12)
+            ax, ay = calibrated_move(hit_obj["x"], hit_obj["y"], f"Mở bài viết #{idx_slot + 1}", args.agent)
+            notify_hud(ax, ay, "click", f"Click bài #{idx_slot + 1}", True, args.agent)
             run(["ydotool", "click", BUTTON_CODES["left"]])
         time.sleep(2.2)
-
-    def _scroll_copy_and_grab_img() -> tuple[str, str, str]:
         with pointer_lock():
             hypr_focus("firefox")
             time.sleep(0.15)
@@ -1091,8 +1173,9 @@ def cmd_web_copy(args):
             press_combo("ctrl+c")
             time.sleep(0.22)
         raw_c = run(["wl-paste", "--no-newline"]).stdout
+        ttl_now = _firefox_title()
         img_f = ""
-        if getattr(args, "save_image", ""):
+        if save_img_base:
             with pointer_lock():
                 press_combo("ctrl+l")
                 time.sleep(0.08)
@@ -1105,58 +1188,69 @@ def cmd_web_copy(args):
                     import urllib.request
                     req = urllib.request.Request(page_url, headers={"User-Agent": "Mozilla/5.0"})
                     html_txt = urllib.request.urlopen(req, timeout=4.5).read().decode("utf-8", errors="ignore")
-                    img_f = _extract_article_image_from_html(page_url, html_txt, Path(args.save_image).expanduser(), query)
+                    slot_p = save_img_base if idx_slot == 0 else save_img_base.with_name(f"{save_img_base.stem}_{idx_slot + 1}{save_img_base.suffix}")
+                    img_f = _extract_article_image_from_html(page_url, html_txt, slot_p, query)
                 except Exception:
                     img_f = ""
-        return raw_c, _clean_copied_article(raw_c), img_f
+        return _clean_copied_article(raw_c), img_f, ttl_now
 
-    raw1, clean_clip, saved_img = _scroll_copy_and_grab_img()
-    first_title = _firefox_title()
+    collected_parts = []
+    saved_imgs = []
+    first_title = ""
+    clicked_titles = []
+    # Deduplicate candidate hits by y-coordinate (>= 40px apart) so we actually visit different links
+    unique_hits = []
+    for h_cand in hits:
+        if all(abs(h_cand["y"] - uh["y"]) >= 36 for uh in unique_hits):
+            unique_hits.append(h_cand)
 
-    # If article #1 is thin (<1200 chars) or yielded 0 valid images, go Back cleanly & enrich from article #2!
-    if (len(clean_clip) < 1200 or (getattr(args, "save_image", "") and not saved_img)) and len(hits) > 1 and hits[1]["text"] != clicked_title:
-        with pointer_lock():
-            hypr_focus("firefox")
-            time.sleep(0.1)
-            press_combo("alt+Left")
-        time.sleep(1.3)
-        with pointer_lock():
-            hypr_focus("firefox")
-            t2 = hits[1]
-            ax2, ay2 = calibrated_move(t2["x"], t2["y"], "Đọc thêm bài #2", args.agent)
-            notify_hud(ax2, ay2, "click", "Mở bài viết #2", True, args.agent)
-            run(["ydotool", "click", BUTTON_CODES["left"]])
-        time.sleep(2.2)
-        _, clean_2, img_2 = _scroll_copy_and_grab_img()
-        if len(clean_2) >= 200:
-            clean_clip = f"{clean_clip}\n\n--- BÀI VIẾT BỔ SUNG ({_firefox_title()}) ---\n{clean_2}"
-        if img_2 and not saved_img:
-            saved_img = img_2
+    for idx_h, h_obj in enumerate(unique_hits[:4]):
+        if idx_h > 0:
+            with pointer_lock():
+                hypr_focus("firefox")
+                time.sleep(0.1)
+                press_combo("alt+Left")
+            time.sleep(1.3)
+        part_txt, part_img, part_ttl = _visit_and_extract(h_obj, len(saved_imgs))
+        if part_img and part_img not in saved_imgs:
+            saved_imgs.append(part_img)
+        if _is_privacy_or_stub(part_txt):
+            # Privacy wall or empty SPA stub -> reject & keep trying next article!
+            continue
+        if not first_title:
+            first_title = part_ttl
+        clicked_titles.append(h_obj["text"])
+        collected_parts.append(f"--- BÀI VIẾT {len(collected_parts) + 1} ({part_ttl}) ---\n{part_txt}")
+        total_chars = sum(len(x) for x in collected_parts)
+        if len(collected_parts) >= target_articles and total_chars >= 1600 and (not save_img_base or len(saved_imgs) >= img_count_target):
+            break
 
-    # If SPA / JS-rendered pages still gave no static og:image, fetch keyword-verified artwork via DDG Images
-    if getattr(args, "save_image", "") and not saved_img:
+    clean_clip = "\n\n".join(collected_parts)
+    if save_img_base and len(saved_imgs) < img_count_target:
         img_q = getattr(args, "image_query", "") or query
-        saved_img = _fetch_verified_ddg_image(img_q, Path(args.save_image).expanduser())
+        saved_imgs = _fetch_verified_ddg_images(img_q, save_img_base, count=img_count_target, existing=saved_imgs)
 
     if clean_clip:
         wl_copy_safe(clean_clip)
         Path("/tmp/ai_web_copied.txt").write_text(
-            f"PAGE_TITLE: {first_title}\nMATCHED_LINK: {clicked_title}\n\n{clean_clip}",
+            f"PAGE_TITLE: {first_title or _firefox_title()}\nMATCHED_LINKS: {'; '.join(clicked_titles)}\n\n{clean_clip}",
             encoding="utf-8",
         )
 
-    if len(clean_clip.strip()) < 80:
-        print(json.dumps({"ok": False, "error": "Clipboard text too short after copy", "chars": len(clean_clip)}))
+    if len(clean_clip.strip()) < 150:
+        print(json.dumps({"ok": False, "blocked": "privacy_or_empty", "error": "Articles blocked by privacy modal or empty after fallback", "chars": len(clean_clip)}))
         sys.exit(1)
 
     print(json.dumps({
         "ok": True,
-        "matched_link": clicked_title,
-        "page_title": _firefox_title(),
+        "matched_link": "; ".join(clicked_titles) or hits[0]["text"],
+        "page_title": first_title or _firefox_title(),
+        "articles_collected": len(collected_parts),
         "changed_page": _firefox_title() != search_title,
         "chars": len(clean_clip),
         "raw_file": "/tmp/ai_web_copied.txt",
-        "image_file": saved_img,
+        "image_file": saved_imgs[0] if saved_imgs else "",
+        "images": saved_imgs,
         "preview": clean_clip[:220],
     }, ensure_ascii=False))
 
@@ -1175,7 +1269,8 @@ def cmd_office_paste(args):
     saved_docx = None
     if args.docx:
         out_p = Path(args.docx).expanduser()
-        _build_docx_file(out_p, args.title or out_p.stem.replace("_", " "), clip, image_path=args.image or None)
+        imgs = [s.strip() for s in (getattr(args, "images", "") or "").split(",") if s.strip()]
+        _build_docx_file(out_p, args.title or out_p.stem.replace("_", " "), clip, image_path=args.image or None, image_paths=imgs)
         saved_docx = str(out_p)
 
     if not app_name or not cmd:
@@ -1343,6 +1438,8 @@ def main():
 
     ytp = sub.add_parser("yt-play", help="Open YouTube search in Firefox, click video below header, wait for autoplay, and verify audio")
     ytp.add_argument("query")
+    ytp.add_argument("--fullscreen", action="store_true", help="Press 'f' for full video after verified playback")
+    ytp.add_argument("--screenshot", default="", help="Optional JPEG path to capture screenshot of playing video")
     add_agent_arg(ytp)
     ytp.set_defaults(func=cmd_yt_play)
 
@@ -1352,6 +1449,7 @@ def main():
     wdx.add_argument("--text", default="")
     wdx.add_argument("--file", default="")
     wdx.add_argument("--image", default="", help="Optional hero image path to embed neatly below title")
+    wdx.add_argument("--images", default="", help="Comma-separated image paths to embed")
     wdx.add_argument("--open", action="store_true")
     wdx.set_defaults(func=cmd_write_docx)
 
@@ -1359,7 +1457,9 @@ def main():
     wcp.add_argument("query")
     wcp.add_argument("--engine", choices=["ddg", "google"], default="ddg")
     wcp.add_argument("--scrolls", type=int, default=2)
+    wcp.add_argument("--articles", type=int, default=1, help="Number of articles to read/merge cleanly (1..3)")
     wcp.add_argument("--save-image", default="", help="Optional path to save featured article og:image")
+    wcp.add_argument("--image-count", type=int, default=1, help="Target count of verified artwork images to save")
     wcp.add_argument("--image-query", default="", help="Specific entity/game query for accurate fallback image search")
     add_agent_arg(wcp)
     wcp.set_defaults(func=cmd_web_copy)
@@ -1369,6 +1469,7 @@ def main():
     ofp.add_argument("--title", default="")
     ofp.add_argument("--source-file", default="")
     ofp.add_argument("--image", default="", help="Optional image path to embed neatly into .docx")
+    ofp.add_argument("--images", default="", help="Comma-separated image paths to embed into .docx")
     add_agent_arg(ofp)
     ofp.set_defaults(func=cmd_office_paste)
 

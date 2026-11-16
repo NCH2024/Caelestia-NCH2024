@@ -1,0 +1,39 @@
+{
+  "recipes": [
+    {
+      "id": "yt_audio_verify",
+      "topic": "Verify YouTube playback in Firefox",
+      "lesson": "Use `caelestia-desktop yt-play` (skips header `--min-y 185` & checks `pactl list sink-inputs` `Corked: no`); never rely on `playerctl` for Firefox."
+    },
+    {
+      "id": "flatpak_lo_paths",
+      "topic": "LibreOffice Flatpak file access & Word styling",
+      "lesson": "Save `.docx` in `~/Documents/` (Flatpak cannot read `/tmp`); embed images/tables via `caelestia-desktop write-docx --image` or `office-paste --image`."
+    },
+    {
+      "id": "nightlight_direct",
+      "topic": "Toggle Night Light without changing power mode",
+      "lesson": "Use `caelestia shell modes setNightLight true 3500` directly (<0.1s) instead of switching into full `sleep` mode unless user asked for battery saver."
+    },
+    {
+      "id": "curated_depth_and_lang",
+      "topic": "Rich Word curation & language accuracy",
+      "lesson": "Avoid thin JS/SPA stub pages (<1200 chars); auto-enrich from hit #2, fetch keyword-verified artwork (>=360px), and translate Word docs to Vietnamese when prompt is Vietnamese even if chatLanguage=auto."
+    },
+    {
+      "id": "yt_skip_chips_shorts",
+      "topic": "YouTube search chip & Shorts skip rule",
+      "lesson": "Scan YouTube results with min_y>=245 & title length>=18 chars to skip Shorts/chips; retry hits[1] cleanly before Round-2 fallback."
+    },
+    {
+      "id": "avoid_privacy_walls",
+      "topic": "Bypass privacy-walled portals (MSN / cookie modals)",
+      "lesson": "Reject MSN/privacy-wall stubs cleanly (`cares about your privacy`); advance to hits[1..2] direct tech news sites or escalate to Round-2 search_web recovery."
+    },
+    {
+      "id": "multi_image_docx",
+      "topic": "Guaranteed multi-image & YouTube capture for Word",
+      "lesson": "Use `web-copy --image-count N` + keyword-filtered DDG `i.js` fallback and `yt-play --screenshot` + `write-docx --images` when multiple images are requested."
+    }
+  ]
+}
