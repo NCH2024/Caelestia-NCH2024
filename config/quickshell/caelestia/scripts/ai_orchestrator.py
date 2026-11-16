@@ -570,8 +570,54 @@ class Orchestrator:
                 return action, text
         return "abort", ""
 
-    def run_single_fast(self, user_task: str, plan_summary: str):
+    def extract_final_barrier(self, user_task: str) -> tuple[str, str | None]:
+        """Strip end-of-task lock barrier from prompts so LLMs NEVER lock prematurely before verification."""
+        low = user_task.lower()
+        if not re.search(r"\b(khóa màn hình|khóa máy|lock screen)\b", low):
+            return user_task, None
+        cleaned = re.sub(
+            r"(?i)(?:,|\s)*(?:\b(?:và|rồi|sau đó|cuối cùng|sau cùng|then|and|finally)\b\s*)*\b(?:khóa màn hình(?: lại)?|khóa máy(?: lại)?|lock(?:\s+the)?\s+screen)\b[.!\s]*",
+            " ",
+            user_task,
+        )
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,")
+        return cleaned or user_task, "lock"
+
+    def verify_deterministic_claims(self, user_task: str, task_start_ts: float) -> tuple[bool, str]:
+        """Hard OS-level verification gate BEFORE reporting complete or locking screen."""
+        low = user_task.lower()
+        # 1. Verify Firefox YouTube playback is genuinely uncorked (Corked: no) & not stuck on /results
+        if re.search(r"\b(youtube)\b", low) and re.search(r"\b(phát|mở|nghe|play)\b", low):
+            out = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True).stdout
+            ff_playing = any(
+                "firefox" in blk.lower() and "corked: no" in blk.lower()
+                for blk in out.split("Sink Input #")
+            )
+            if not ff_playing:
+                return False, (
+                    "Kiểm chứng hệ thống phát hiện Firefox/YouTube CHƯA phát âm thanh (`Corked: no` chưa hoạt động)."
+                    if self.is_vi()
+                    else "System check failed: Firefox/YouTube audio is NOT actively playing (`Corked: no` missing)."
+                )
+        # 2. Verify Word/.docx file was created cleanly during this task
+        if re.search(r"\b(word|\.docx|docx)\b", low) and re.search(r"\b(copy|chép|lưu|tạo|xuất|sang|vào)\b", low):
+            docs_dir = Path.home() / "Documents"
+            recent_docx = [
+                p for p in (docs_dir.glob("*.docx") if docs_dir.exists() else [])
+                if p.stat().st_mtime >= (task_start_ts - 5) and p.stat().st_size > 400
+            ]
+            if not recent_docx:
+                return False, (
+                    "Chưa thấy file Word (.docx) mới hợp lệ được tạo trong ~/Documents/."
+                    if self.is_vi()
+                    else "System check failed: no newly created valid .docx file found in ~/Documents/."
+                )
+        return True, ""
+
+    def run_single_fast(self, user_task: str, plan_summary: str, final_barrier: str | None = None, task_start_ts: float | None = None):
         """Tier 2 Fast Lane: One continuous cached `agy` session executes & verifies directly."""
+        if task_start_ts is None:
+            task_start_ts = time.time()
         emit(
             "assistant_message",
             model=self.worker_model,
@@ -594,10 +640,13 @@ class Orchestrator:
         elif wants_visual:
             desktop_rule = (
                 "VISUAL REAL-TIME CURSOR MODE ACTIVE (FAST LANE):\n"
-                "- Use `caelestia-desktop` with `--agent \"Meow AI\"` (or `--agent Browser` / `--agent Control` in parallel tracks) so live Ghost Cursors track your work without blinking out.\n"
-                "- SPEED RULE #1 — SKIP HOMEPAGE & SCREENSHOTS WHEN POSSIBLE: For YouTube/web searches, launch the direct search URL (`https://www.youtube.com/results?search_query=<url_encoded_query>` or Google search URL), then immediately run accent-insensitive OCR click: `caelestia-desktop click-text \"<title/artist keyword>\" --window firefox --wait 5 --agent \"Meow AI\"`!\n"
-                "- SPEED RULE #2 — BATCH COMMANDS: Combine `launch ... && click-text ... --wait 5` (or `nexus openPage 0 && click-text \"Cinema\" --window quickshell --wait 2.5`) inside ONE shell call instead of separate turns!\n"
-                "- FALLBACK ONLY: If `click-text` returns not found, run `caelestia-desktop screen --grid --fast --out /tmp/ai_screen.jpg --agent \"Meow AI\"` + `read_file` -> `click <x> <y> --agent \"Meow AI\"`."
+                "- Use `caelestia-desktop` with `--agent \"Meow AI\"` so live Ghost Cursors track your work without blinking out.\n"
+                "- SPEED RULE #1 — 1-COMMAND YOUTUBE & DOCX HELPERS:\n"
+                "  * To search & play a YouTube song/video visually: ALWAYS run `caelestia-desktop yt-play \"<song/video query>\" --agent \"Meow AI\"` in ONE command (skips search header `--min-y 185`, waits safely for autoplay, verifies `Corked: no`). NEVER open `youtube.com` homepage or manually screenshot search results!\n"
+                "  * To save/copy content to Word (`.docx`, since LibreOffice/Word GUI are not installed): write body text to `/tmp/doc_body.txt` and run `caelestia-desktop write-docx ~/Documents/<name>.docx --title \"<Title>\" --file /tmp/doc_body.txt`!\n"
+                "- SPEED RULE #2 — BATCH COMMANDS: Combine steps inside ONE shell call instead of separate turns. For UI controls, use `click-text \"<label>\" --window <app> --min-y 185 --wait 5 --agent \"Meow AI\"`.\n"
+                "- FALLBACK ONLY: If `click-text` / `yt-play` returns error, run `caelestia-desktop screen --grid --fast --out /tmp/ai_screen.jpg --agent \"Meow AI\"` + `read_file` -> `click <x> <y> --agent \"Meow AI\"`.\n"
+                "- SAFETY RULE: NEVER run `caelestia shell lock lock` inside your commands — any screen lock executes automatically ONLY AFTER verification passes!"
             )
         else:
             desktop_rule = "Desktop GUI control (`caelestia-desktop`) is ALLOWED."
@@ -632,9 +681,18 @@ class Orchestrator:
 
             parsed = extract_json_block(out)
             if parsed is None:
-                # Model returned a clean plain markdown answer without JSON wrapper -> treat as complete
-                emit("assistant_message", model=eff_m, title="Kết quả đã xác minh" if self.is_vi() else "Verified Result", text=out)
-                emit("task_complete", progress=100, summary=out)
+                ok_det, det_msg = self.verify_deterministic_claims(user_task, task_start_ts)
+                if not ok_det and attempt < 3:
+                    emit("engine_step", worker="Meow AI", step=attempt, detail=f"Kiểm chứng thất bại — đang khắc phục ({det_msg[:60]})")
+                    next_prompt = f"VERIFICATION GATE FAILED: {det_msg}\nFix the actual missing/unplayed item now (e.g. run `caelestia-desktop yt-play ...` or `write-docx ...`) and re-verify cleanly."
+                    continue
+                if not ok_det:
+                    emit("task_error", message=det_msg)
+                    return
+                barrier_msg = self.run_final_barrier(final_barrier)
+                final_txt = f"{out}\n- {barrier_msg}" if barrier_msg else out
+                emit("assistant_message", model=eff_m, title="Kết quả đã xác minh" if self.is_vi() else "Verified Result", text=final_txt)
+                emit("task_complete", progress=100, summary=final_txt)
                 self.logger.write("SINGLE FAST COMPLETED.", "\033[1;32m")
                 return
 
@@ -644,6 +702,17 @@ class Orchestrator:
             polish_hint = str(parsed.get("polish_hint") or "").strip()
 
             if verdict == "complete":
+                ok_det, det_msg = self.verify_deterministic_claims(user_task, task_start_ts)
+                if not ok_det and attempt < 3:
+                    emit("engine_step", worker="Meow AI", step=attempt, detail=f"Kiểm chứng thất bại — đang khắc phục ({det_msg[:60]})")
+                    next_prompt = f"VERIFICATION GATE FAILED: {det_msg}\nDo NOT claim complete until fixed (e.g. run `caelestia-desktop yt-play ...` or `write-docx ...`). Respond with JSON."
+                    continue
+                if not ok_det:
+                    emit("task_error", message=det_msg)
+                    return
+                barrier_msg = self.run_final_barrier(final_barrier)
+                if barrier_msg:
+                    final_reply = f"{final_reply}\n- {barrier_msg}"
                 emit("assistant_message", model=eff_m, title="Kết quả đã xác minh" if self.is_vi() else "Verified Result", text=final_reply)
                 emit("task_complete", progress=100, summary=final_reply)
                 self.logger.write("SINGLE FAST COMPLETED.", "\033[1;32m")
@@ -689,8 +758,9 @@ class Orchestrator:
             rname = str(spec.get("role_name") or f"Specialist {idx + 1}")
             sub_prompt = str(spec.get("prompt") or user_task)
             full_prompt = (
-                f"Role: {rname}. Execute your assigned scope cleanly and verify outputs before reporting.\n"
-                "Use preloaded AGENTS.md facts directly (no blind file exploration).\n\n"
+                f"Role: {rname}. Execute ONLY your assigned scope cleanly and verify outputs before reporting.\n"
+                "Use preloaded AGENTS.md facts directly (no blind file exploration). Keep output concise without meta-notes about excluded scopes.\n"
+                f"{self.language_instruction()}\n\n"
                 f"USER REQUEST:\n{user_task}\n\n"
                 f"SCOPE:\n{sub_prompt}"
             )
@@ -761,11 +831,13 @@ class Orchestrator:
             return f"Không thể khóa màn hình ({res.stderr.strip() or res.returncode})."
         return ""
 
-    def run_multi_agent(self, user_task: str, triage: dict, eff_coord: str, final_barrier: str | None = None):
+    def run_multi_agent(self, user_task: str, triage: dict, eff_coord: str, final_barrier: str | None = None, task_start_ts: float | None = None):
         """Tier 3 Heavy Engineering / Multi-Workstream Team + Coordinator Audit."""
+        if task_start_ts is None:
+            task_start_ts = time.time()
         collaborators = (triage.get("collaborators") or [])[:3]
         if not collaborators:
-            self.run_single_fast(user_task, str(triage.get("plan_summary") or ""))
+            self.run_single_fast(user_task, str(triage.get("plan_summary") or ""), final_barrier=final_barrier, task_start_ts=task_start_ts)
             return
 
         plan_summary = str(triage.get("plan_summary") or "").strip() or (
@@ -824,7 +896,12 @@ class Orchestrator:
             bundled = "\n\n".join(accumulated[-5:])
             all_ok = bool(collab_results) and all(r.get("ok") for r in collab_results)
             has_blocker = bool(re.search(r"\b(blocked|unable to|cannot|could not|failed to|chưa thể|không thể|bị khóa|tạm dừng|corked:\s*yes)\b", bundled.lower()))
-            fast_synth = all_ok and not has_blocker
+            ok_det, det_msg = self.verify_deterministic_claims(user_task, task_start_ts)
+            if not ok_det:
+                self.logger.write(f"Deterministic claim check failed: {det_msg}", "\033[33m")
+                accumulated.append(f"[System Deterministic Audit -> FAIL]\n{det_msg}")
+                bundled = "\n\n".join(accumulated[-5:])
+            fast_synth = all_ok and not has_blocker and ok_det
             if fast_synth and not self.looks_heavy_engineering(user_task):
                 # Deterministic 0ms Python synthesis when non-heavy multi-tracks already verified clean state
                 summary_parts = [r["output"].strip() for r in collab_results if r.get("output", "").strip()]
@@ -1116,84 +1193,15 @@ class Orchestrator:
         from urllib.parse import quote_plus
         from concurrent.futures import ThreadPoolExecutor
 
-        def firefox_active_title() -> str:
-            try:
-                out = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True).stdout
-                clients = json.loads(out)
-                ff = [c for c in clients if "firefox" in str(c.get("class", "")).lower()]
-                ff.sort(key=lambda c: int(c.get("focusHistoryID", 999)))
-                return str(ff[0].get("title", "")) if ff else ""
-            except Exception:
-                return ""
-
-        def firefox_audio_playing() -> tuple[bool, bool]:
-            """Return (has_firefox_sink, is_actively_playing_uncorked)."""
-            out = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True).stdout
-            has_sink = False
-            playing = False
-            for blk in out.split("Sink Input #"):
-                low_b = blk.lower()
-                if "firefox" in low_b:
-                    has_sink = True
-                    if "corked: no" in low_b:
-                        playing = True
-                        break
-            return has_sink, playing
-
         def run_browser_track() -> tuple[bool, str]:
             emit("engine_start", role="executor", label="Browser", model="local-visual")
-            url = f"https://www.youtube.com/results?search_query={quote_plus(yt_query)}"
-            subprocess.run(["caelestia-desktop", "launch", "firefox", url, "--agent", "Browser"], capture_output=True, text=True)
-            emit("engine_step", worker="Browser", step=1, detail=f"Mở tìm kiếm YouTube: {yt_query}")
-            time.sleep(0.5)
-            search_title = firefox_active_title()
-
-            q_words = yt_query.split()
-            click_kw = " ".join(q_words[:4]) if len(q_words) >= 2 else yt_query
-            res_c = subprocess.run(
-                ["caelestia-desktop", "click-text", click_kw, "--window", "firefox", "--wait", "5.5", "--agent", "Browser"],
+            emit("engine_step", worker="Browser", step=1, detail=f"Mở & xác minh phát YouTube: {yt_query}")
+            res = subprocess.run(
+                ["caelestia-desktop", "yt-play", yt_query, "--agent", "Browser"],
                 capture_output=True,
                 text=True,
             )
-            if res_c.returncode != 0 and len(q_words) >= 2:
-                res_c = subprocess.run(
-                    ["caelestia-desktop", "click-text", " ".join(q_words[-2:]), "--window", "firefox", "--wait", "2.0", "--agent", "Browser"],
-                    capture_output=True,
-                    text=True,
-                )
-            if res_c.returncode != 0:
-                return False, f"Chưa click được kết quả YouTube '{yt_query}'."
-
-            emit("engine_step", worker="Browser", step=2, detail="Chờ video tự phát & xác minh âm thanh")
-            # Poll up to 4.5s for autoplay audio to start naturally BEFORE ever touching `k` (prevents play->pause race!)
-            has_sink, is_playing = False, False
-            cur_title = search_title
-            deadline = time.time() + 4.5
-            while time.time() < deadline:
-                cur_title = firefox_active_title()
-                has_sink, is_playing = firefox_audio_playing()
-                if is_playing:
-                    # Confirm it remains playing 0.5s later (not paused right after load)
-                    time.sleep(0.5)
-                    has_sink, is_playing = firefox_audio_playing()
-                    if is_playing:
-                        break
-                time.sleep(0.4)
-
-            # ONLY if we transitioned to a watch page AND audio is genuinely silent/corked after 4.5s, press `k` ONCE
-            watched_page = bool(cur_title and cur_title != search_title and "youtube" in cur_title.lower())
-            if not is_playing and watched_page:
-                emit("engine_step", worker="Browser", step=3, detail="Video chưa phát — gửi lệnh Play (k)")
-                subprocess.run(["caelestia-desktop", "focus", "firefox", "--agent", "Browser"], capture_output=True)
-                subprocess.run(["caelestia-desktop", "key", "k", "--agent", "Browser"], capture_output=True)
-                deadline2 = time.time() + 2.5
-                while time.time() < deadline2:
-                    has_sink, is_playing = firefox_audio_playing()
-                    if is_playing:
-                        break
-                    time.sleep(0.4)
-
-            if not is_playing:
+            if res.returncode != 0:
                 return False, f"Video '{yt_query}' chưa phát âm thanh (`Corked: no` chưa kích hoạt)."
             return True, f"Firefox YouTube (**{yt_query}**): đã mở và xác nhận đang phát (`Corked: no`)."
 
@@ -1279,6 +1287,7 @@ class Orchestrator:
         return not re.search(action_verbs, low)
 
     def run_task(self, user_task: str):
+        task_start_ts = time.time()
         self.logger.write(f"USER REQUEST: {user_task}", "\033[1;34m")
 
         # Tier 0: Zero-LLM Instant Local Execution (<100ms, 0 tokens)
@@ -1290,7 +1299,7 @@ class Orchestrator:
             emit("task_complete", progress=100, summary=fast_ans)
             return
 
-        # Tier 0.5: Parallel Visual Compound Fast-Path (~4-7s, 0 cloud tokens, real Ghost Cursors!)
+        # Tier 0.5: Sequential Visual Compound Fast-Path (~5-9s, 0 cloud tokens, real Ghost Cursors!)
         compound_ans = self.try_compound_visual_fast_path(user_task)
         if compound_ans is not None:
             self.logger.write("Tier 0.5 visual compound fast-path completed.", "\033[1;32m")
@@ -1298,44 +1307,86 @@ class Orchestrator:
             emit("task_complete", progress=100, summary=compound_ans)
             return
 
+        # Global safety invariant: extract end-of-task lock barrier from ALL AI routes
+        clean_task, final_barrier = self.extract_final_barrier(user_task)
+
         # Fast 0ms heuristic bypasses extra cold Router LLM call for 90% of requests!
-        if self.looks_pure_qa(user_task):
+        if self.looks_pure_qa(clean_task):
             emit("phase", phase="working", progress=35, detail="Đang trả lời nhanh..." if self.is_vi() else "Answering...")
             qa_model = self.fast_router_model(self.supervisor_model)
             ok, ans, err, eff_m, _ = self.run_agy(
                 "router",
                 "Meow AI",
-                f"{self.language_instruction()}\nAnswer concisely and accurately in Markdown without running unnecessary tools:\n{user_task}",
+                f"{self.language_instruction()}\nAnswer concisely and accurately in Markdown without running unnecessary tools:\n{clean_task}",
                 qa_model,
             )
             if not ok:
                 emit("task_error", message=err or "Error")
                 return
+            barrier_msg = self.run_final_barrier(final_barrier)
+            if barrier_msg:
+                ans = f"{ans}\n- {barrier_msg}"
             emit("assistant_message", model=eff_m, title="Trả lời" if self.is_vi() else "Response", text=ans)
             emit("task_complete", progress=100, summary=ans)
             self.logger.write("DIRECT FAST QA COMPLETED.", "\033[1;32m")
             return
 
-        if not self.looks_heavy_engineering(user_task):
-            # When visual cursor mode is active and request spans Browser + Control/App surfaces simultaneously,
-            # launch 2 parallel visual cursor tracks (`Browser` + `Control`) directly (0ms router overhead!)
-            low = user_task.lower()
+        if not self.looks_heavy_engineering(clean_task):
+            low = clean_task.lower()
             has_browser = bool(re.search(r"\b(trình duyệt|browser|firefox|youtube|google|web|bài báo|trang web)\b", low))
             has_control = bool(re.search(r"\b(chế độ|mode|cài đặt|settings|nexus|bảng điều khiển|độ sáng|âm lượng|equalizer|phần mềm|thống kê)\b", low))
-            final_barrier = None
-            if re.search(r"\b(cuối cùng|sau cùng|cuối|finally|then lock).*?(khóa màn hình|khóa máy|lock screen|lock)\b", low) or re.search(r"\b(khóa màn hình|lock screen)\b", low):
-                final_barrier = "lock"
+            has_research_doc = bool(re.search(r"\b(tìm bài|bài viết|tin tức|nghiên cứu|cập nhật|copy|chép|word|\.docx|docx|tài liệu|tóm tắt)\b", low))
+            has_youtube_play = bool(re.search(r"\b(youtube)\b", low) and re.search(r"\b(mở|phát|nghe|play)\b", low))
+
+            barrier_warn = (
+                " CRITICAL: Do NOT run `caelestia shell lock lock` yourself — screen lock runs automatically ONLY AFTER verified completion!"
+                if final_barrier
+                else ""
+            )
+
+            # Fast Parallel Split: Web Research/Word Doc + YouTube Playback (cuts 100s single-loop down to ~20s!)
+            if self.allow_desktop and has_research_doc and has_youtube_play:
+                self.logger.write(f"Local router -> parallel Research/Doc + YouTube tracks (barrier={final_barrier}).", "\033[1;36m")
+                multi_triage = {
+                    "plan_summary": (
+                        "Đang chạy song song 2 phân hệ: tìm bài viết tạo file Word (.docx) và mở phát video trên YouTube."
+                        if self.is_vi()
+                        else "Running Research/Docx creation and YouTube visual playback in parallel."
+                    ),
+                    "success_criteria": "Valid .docx saved in ~/Documents/ and YouTube video actively playing (Corked: no).",
+                    "collaborators": [
+                        {
+                            "role_name": "Research",
+                            "prompt": (
+                                "Handle ONLY searching the requested article and creating the `.docx` Word file cleanly: "
+                                "1) Perform at most 1 concise `search_web` call on the topic, write structured summary to `/tmp/doc_body.txt`. "
+                                "2) Remember from AGENTS.md no MS Word/LibreOffice GUI is installed — immediately create the Word document in 1 command: "
+                                "`caelestia-desktop write-docx ~/Documents/<TopicName>.docx --title \"<Title>\" --file /tmp/doc_body.txt` and verify non-empty size. Do NOT launch Firefox or touch YouTube!"
+                                + barrier_warn
+                            ),
+                            "parallel": True,
+                        },
+                        {
+                            "role_name": "Browser",
+                            "prompt": (
+                                "Handle ONLY the YouTube video playback cleanly in ONE shell call using `caelestia-desktop yt-play \"<song/video query>\" --agent Browser`! "
+                                "`yt-play` already launches Firefox search, skips the header (`--min-y 185`), clicks visually with Ghost Cursor, waits safely for autoplay, and verifies `Corked: no`. "
+                                "If `yt-play` returns error, inspect once with `screen --grid --fast` and fix. Report exact window title and playback state."
+                                + barrier_warn
+                            ),
+                            "parallel": True,
+                        },
+                    ],
+                }
+                self.run_multi_agent(user_task, multi_triage, self.supervisor_model, final_barrier=final_barrier, task_start_ts=task_start_ts)
+                return
+
             if self.allow_desktop and self.prefer_visual_cursor and has_browser and has_control:
                 has_seq_order = bool(re.search(r"\b(sau đó|rồi|tiếp theo|cuối cùng|sau cùng|then|after that)\b", low))
                 ctl_parallel = not has_seq_order
                 self.logger.write(
                     f"Local router -> multi-cursor GUI tracks (Browser + Control, sequential={has_seq_order}, barrier={final_barrier}).",
                     "\033[1;36m",
-                )
-                barrier_warn = (
-                    " CRITICAL: Do NOT lock/sleep the screen yet — screen lock is handled automatically ONLY AFTER all prior tracks pass verification!"
-                    if final_barrier
-                    else ""
                 )
                 multi_triage = {
                     "plan_summary": (
@@ -1353,8 +1404,8 @@ class Orchestrator:
                             "role_name": "Browser",
                             "prompt": (
                                 "Handle ONLY the browser/web portion visually using `--agent Browser`: "
-                                "launch `https://www.youtube.com/results?search_query=<query>` (for YouTube) with `caelestia-desktop launch firefox \"...\" --agent Browser`, then run `caelestia-desktop click-text \"<song/title keyword>\" --window firefox --wait 5 --agent Browser`. "
-                                "IMPORTANT: Wait 3-4s for YouTube autoplay to buffer BEFORE touching `k` (otherwise pressing `k` pauses an auto-playing video!). Poll `pactl list sink-inputs` for `Corked: no`; ONLY press `key k` if still paused after 4s, and fail/report clearly if `Corked: no` is still not active. NEVER use `playerctl` for Firefox!"
+                                "for YouTube, run `caelestia-desktop yt-play \"<song/video query>\" --agent Browser` in ONE call (already skips `--min-y 185`, waits cleanly for autoplay, and verifies `Corked: no`). "
+                                "For other websites, launch Firefox and click via `click-text ... --window firefox --min-y 185 --wait 5 --agent Browser`. Fail cleanly if audio/action is unverified."
                                 + barrier_warn
                             ),
                             "parallel": True,
@@ -1370,7 +1421,7 @@ class Orchestrator:
                         },
                     ],
                 }
-                self.run_multi_agent(user_task, multi_triage, self.supervisor_model, final_barrier=final_barrier)
+                self.run_multi_agent(user_task, multi_triage, self.supervisor_model, final_barrier=final_barrier, task_start_ts=task_start_ts)
                 return
 
             # Direct Unified Single-Session Execution (saves 4-6s + ~10k tokens vs separate Router boot)
@@ -1379,8 +1430,8 @@ class Orchestrator:
                 if self.is_vi()
                 else "Executing in single unified session..."
             )
-            self.logger.write("Local router -> unified single fast lane (skipped extra Router boot).", "\033[1;36m")
-            self.run_single_fast(user_task, plan_msg)
+            self.logger.write(f"Local router -> unified single fast lane (barrier={final_barrier}).", "\033[1;36m")
+            self.run_single_fast(clean_task, plan_msg, final_barrier=final_barrier, task_start_ts=task_start_ts)
             return
 
         # Tier 3: Heavy Multi-Agent Decomposition
@@ -1394,8 +1445,9 @@ class Orchestrator:
             "Decompose this complex request into 2-3 focused parallel/sequential specialist tracks.\n"
             "Respect temporal dependencies ('sau đó', 'rồi', 'cuối cùng', 'then', 'after'): use parallel=false for dependent downstream stages so Stage N verifies before Stage N+1 runs.\n"
             "Never add a redundant verifier worker (Coordinator audits afterwards). Use parallel=true only for truly independent tracks.\n"
+            f"CRITICAL: NEVER include lock/sleep commands inside worker tracks.\n"
             f"{self.language_instruction()}\n\n"
-            f"USER REQUEST:\n{user_task}\n\n"
+            f"USER REQUEST:\n{clean_task}\n\n"
             'Respond ONLY with JSON: {"mode":"multi","plan_summary":"1 concise sentence","success_criteria":"verification checks","collaborators":[{"role_name":"","prompt":"","parallel":true}]}'
         )
         router_model = self.fast_router_model(self.supervisor_model)
@@ -1406,9 +1458,9 @@ class Orchestrator:
 
         triage = extract_json_block(triage_raw) or {}
         if triage.get("collaborators"):
-            self.run_multi_agent(user_task, triage, eff_coord)
+            self.run_multi_agent(user_task, triage, eff_coord, final_barrier=final_barrier, task_start_ts=task_start_ts)
         else:
-            self.run_single_fast(user_task, str(triage.get("plan_summary") or user_task))
+            self.run_single_fast(clean_task, str(triage.get("plan_summary") or clean_task), final_barrier=final_barrier, task_start_ts=task_start_ts)
 
 
 def main():

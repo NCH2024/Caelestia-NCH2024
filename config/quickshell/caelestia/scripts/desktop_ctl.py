@@ -233,7 +233,7 @@ def hypr_focus(target: str) -> bool:
     return r.returncode == 0
 
 
-def _ocr_scan_once(query: str, window_filter: str | None = None, lang: str = "auto") -> list[dict]:
+def _ocr_scan_once(query: str, window_filter: str | None = None, lang: str = "auto", min_y: int = 0) -> list[dict]:
     """Capture screen/window, preprocess (0.65x grayscale BMP, auto-invert dark UI) -> sub-second TSV OCR."""
     ox, oy = 0, 0
     region_arg = None
@@ -340,13 +340,15 @@ def _ocr_scan_once(query: str, window_filter: str | None = None, lang: str = "au
                 hits.append({"text": w["text"], "x": w["x"], "y": w["y"], "score": 1})
 
     hits.sort(key=lambda d: (-d["score"], d["y"], d["x"]))
+    if min_y > 0:
+        hits = [h for h in hits if h["y"] >= min_y]
     return hits
 
 
-def ocr_find_matches(query: str, window_filter: str | None = None, lang: str = "auto", wait_sec: float = 0.0) -> list[dict]:
+def ocr_find_matches(query: str, window_filter: str | None = None, lang: str = "auto", wait_sec: float = 0.0, min_y: int = 0) -> list[dict]:
     deadline = time.time() + max(0.0, float(wait_sec or 0.0))
     while True:
-        hits = _ocr_scan_once(query, window_filter, lang)
+        hits = _ocr_scan_once(query, window_filter, lang, min_y=min_y)
         if hits or time.time() >= deadline:
             return hits
         time.sleep(0.35)
@@ -494,9 +496,9 @@ def cmd_find(args):
         with pointer_lock():
             hypr_focus(args.window)
             time.sleep(0.12)
-            hits = ocr_find_matches(args.query, args.window, args.lang, args.wait)
+            hits = ocr_find_matches(args.query, args.window, args.lang, args.wait, min_y=args.min_y)
     else:
-        hits = ocr_find_matches(args.query, args.window, args.lang, args.wait)
+        hits = ocr_find_matches(args.query, args.window, args.lang, args.wait, min_y=args.min_y)
     print(json.dumps({"found": len(hits) > 0, "count": len(hits), "matches": hits[:10]}, ensure_ascii=False))
     if not hits:
         sys.exit(1)
@@ -507,7 +509,7 @@ def cmd_click_text(args):
         if args.window:
             hypr_focus(args.window)
             time.sleep(0.12)
-        hits = ocr_find_matches(args.query, args.window, args.lang, args.wait)
+        hits = ocr_find_matches(args.query, args.window, args.lang, args.wait, min_y=args.min_y)
         if not hits:
             print(json.dumps({"ok": False, "error": f"Text '{args.query}' not found on screen"}))
             sys.exit(1)
@@ -518,6 +520,173 @@ def cmd_click_text(args):
         notify_hud(ax if ax >= 0 else target["x"], ay if ay >= 0 else target["y"], "click", lbl, True, args.agent)
         run(["ydotool", "click", BUTTON_CODES[args.button]])
     print(json.dumps({"ok": True, "matched": target["text"], "at": [ax, ay]}))
+
+
+def _firefox_title() -> str:
+    c = find_client("firefox")
+    return str(c.get("title", "")) if c else ""
+
+
+def _firefox_audio_corked() -> tuple[bool, bool]:
+    out = run(["pactl", "list", "sink-inputs"]).stdout
+    has_ff = False
+    playing = False
+    for blk in out.split("Sink Input #"):
+        lb = blk.lower()
+        if "firefox" in lb:
+            has_ff = True
+            if "corked: no" in lb:
+                playing = True
+                break
+    return has_ff, playing
+
+
+def cmd_yt_play(args):
+    """Visually open YouTube search, OCR-click result below header (min_y=185), wait safely for autoplay, and verify audio."""
+    query = args.query.strip()
+    url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
+    w, h, _ = get_monitor_info()
+    notify_hud(w // 2, h // 2, "launch", f"YouTube: {query[:20]}", False, args.agent)
+    subprocess.Popen(["firefox", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    time.sleep(1.4)
+
+    words = query.split()
+    candidates = []
+    if len(words) >= 3:
+        candidates.append(" ".join(words[:4]))
+    candidates.append(query)
+    if len(words) >= 2:
+        candidates.append(" ".join(words[-2:]))
+
+    clicked_match = None
+    search_title = ""
+    with pointer_lock():
+        hypr_focus("firefox")
+        time.sleep(0.18)
+        search_title = _firefox_title()
+        hits = []
+        deadline = time.time() + 6.0
+        while time.time() < deadline and not hits:
+            for cand in candidates:
+                hits = _ocr_scan_once(cand, "firefox", "auto", min_y=185)
+                if hits:
+                    break
+            if not hits:
+                time.sleep(0.4)
+        if not hits:
+            print(json.dumps({"ok": False, "error": f"No YouTube result text matched '{query}' below header"}))
+            sys.exit(1)
+        target = hits[0]
+        clicked_match = target["text"]
+        lbl = f"Play '{query[:18]}'"
+        ax, ay = calibrated_move(target["x"], target["y"], lbl, args.agent)
+        notify_hud(ax if ax >= 0 else target["x"], ay if ay >= 0 else target["y"], "click", lbl, True, args.agent)
+        run(["ydotool", "click", BUTTON_CODES["left"]])
+
+    # Wait up to 4.5s for YouTube autoplay to buffer cleanly BEFORE touching 'k' (no accidental pause!)
+    cur_title = search_title
+    is_playing = False
+    deadline = time.time() + 4.5
+    while time.time() < deadline:
+        cur_title = _firefox_title()
+        _, is_playing = _firefox_audio_corked()
+        if is_playing:
+            time.sleep(0.5)
+            _, is_playing = _firefox_audio_corked()
+            if is_playing:
+                break
+        time.sleep(0.4)
+
+    watched = bool(cur_title and cur_title != search_title and "youtube" in cur_title.lower())
+    if not is_playing and watched:
+        with pointer_lock():
+            hypr_focus("firefox")
+            time.sleep(0.08)
+            notify_hud(ax, ay, "key", "Play (k)", False, args.agent)
+            press_combo("k")
+        deadline2 = time.time() + 2.5
+        while time.time() < deadline2:
+            _, is_playing = _firefox_audio_corked()
+            if is_playing:
+                break
+            time.sleep(0.4)
+
+    out_obj = {
+        "ok": bool(is_playing),
+        "playing": bool(is_playing),
+        "matched": clicked_match,
+        "title": _firefox_title(),
+    }
+    print(json.dumps(out_obj, ensure_ascii=False))
+    if not is_playing:
+        sys.exit(1)
+
+
+def cmd_write_docx(args):
+    """Create a valid clean Word .docx file using only Python stdlib zipfile + XML (0 external deps)."""
+    import shutil
+    import zipfile
+    from xml.sax.saxutils import escape
+
+    out_path = Path(args.path).expanduser()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    body_text = args.text or ""
+    if args.file:
+        body_text = Path(args.file).expanduser().read_text(encoding="utf-8")
+
+    paras = []
+    if args.title:
+        paras.append(
+            f'<w:p><w:pPr><w:spacing w:after="160"/></w:pPr>'
+            f'<w:r><w:rPr><w:b/><w:sz w:val="32"/></w:rPr>'
+            f'<w:t xml:space="preserve">{escape(args.title)}</w:t></w:r></w:p>'
+        )
+    for line in body_text.splitlines():
+        s = line.rstrip()
+        if not s:
+            paras.append("<w:p/>")
+            continue
+        is_heading = s.startswith("# ") or s.startswith("## ")
+        clean = s.lstrip("# ").strip() if is_heading else s
+        if is_heading:
+            paras.append(
+                f'<w:p><w:pPr><w:spacing w:before="140" w:after="80"/></w:pPr>'
+                f'<w:r><w:rPr><w:b/><w:sz w:val="26"/></w:rPr>'
+                f'<w:t xml:space="preserve">{escape(clean)}</w:t></w:r></w:p>'
+            )
+        else:
+            paras.append(
+                f'<w:p><w:r><w:t xml:space="preserve">{escape(clean)}</w:t></w:r></w:p>'
+            )
+
+    doc_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f'<w:body>{"".join(paras)}<w:sectPr/></w:body></w:document>'
+    )
+    ct_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-officedocument.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        '</Types>'
+    )
+    rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+        '</Relationships>'
+    )
+    with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", ct_xml)
+        zf.writestr("_rels/.rels", rels_xml)
+        zf.writestr("word/document.xml", doc_xml)
+
+    office_bin = next((shutil.which(b) for b in ("lowriter", "libreoffice", "onlyoffice-desktopeditors", "wps") if shutil.which(b)), None)
+    if args.open and office_bin:
+        subprocess.Popen([office_bin, str(out_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    print(json.dumps({"ok": True, "path": str(out_path), "bytes": out_path.stat().st_size, "office_app": office_bin}, ensure_ascii=False))
 
 
 def cmd_ocr(args):
@@ -599,6 +768,7 @@ def main():
     fnd.add_argument("--window", default=None, help="Limit OCR to window class/title substring")
     fnd.add_argument("--lang", default="auto")
     fnd.add_argument("--wait", type=float, default=0.0, help="Wait/poll seconds until matching text appears")
+    fnd.add_argument("--min-y", type=int, default=0, help="Skip hits above this Y coordinate (e.g. skip browser search bar)")
     add_agent_arg(fnd)
     fnd.set_defaults(func=cmd_find)
 
@@ -607,10 +777,24 @@ def main():
     ct.add_argument("--window", default=None, help="Limit OCR to window class/title substring")
     ct.add_argument("--lang", default="auto")
     ct.add_argument("--wait", type=float, default=0.0, help="Wait/poll seconds until matching text appears")
+    ct.add_argument("--min-y", type=int, default=0, help="Skip hits above this Y coordinate (e.g. skip browser search bar)")
     ct.add_argument("--index", type=int, default=0)
     ct.add_argument("--button", choices=["left", "right", "middle"], default="left")
     add_agent_arg(ct)
     ct.set_defaults(func=cmd_click_text)
+
+    ytp = sub.add_parser("yt-play", help="Open YouTube search in Firefox, click video below header, wait for autoplay, and verify audio")
+    ytp.add_argument("query")
+    add_agent_arg(ytp)
+    ytp.set_defaults(func=cmd_yt_play)
+
+    wdx = sub.add_parser("write-docx", help="Create a valid Word .docx document instantaneously with zero dependencies")
+    wdx.add_argument("path")
+    wdx.add_argument("--title", default="")
+    wdx.add_argument("--text", default="")
+    wdx.add_argument("--file", default="")
+    wdx.add_argument("--open", action="store_true")
+    wdx.set_defaults(func=cmd_write_docx)
 
     op = sub.add_parser("ocr", help="Run tesseract OCR on current screen or region")
     op.add_argument("--region")

@@ -34,7 +34,8 @@ def detect_apps() -> dict[str, list[str]]:
         "browsers": ["firefox", "chromium", "google-chrome-stable", "brave", "vivaldi"],
         "terminals": ["foot", "kitty", "alacritty", "wezterm"],
         "editors": ["codium", "code", "kate", "nvim", "nano"],
-        "office_data": ["libreoffice", "onlyoffice-desktopeditors", "mousepad", "xed", "python3"],
+        "office_gui": ["lowriter", "libreoffice", "onlyoffice-desktopeditors", "wps"],
+        "office_data": ["pandoc", "python3"],
         "media_cli": ["playerctl", "wpctl", "pactl", "mpv", "vlc"],
         "desktop_tools": ["caelestia-desktop", "grim", "ydotool", "wl-copy", "tesseract", "hyprctl"],
     }
@@ -77,7 +78,8 @@ def main():
 - **GitHub Dotfiles Repo:** `~/Caelestia-NCH2024/` (keep `~/.config/quickshell/caelestia/` and `~/Caelestia-NCH2024/config/quickshell/caelestia/` synced when modifying UI)
 - **Installed Apps & Tools:**
   - Browsers: {', '.join(apps['browsers']) or 'none'}
-  - Editors / Office / Data: {', '.join(apps['editors'] + apps['office_data']) or 'python3'}
+  - Editors / Office CLI: {', '.join(apps['editors'] + apps['office_data']) or 'python3'}
+  - Office GUI Apps (Word/Writer): {', '.join(apps['office_gui']) or 'NONE installed (create .docx directly in ~/Documents/ via caelestia-desktop write-docx)'}
   - Media / Audio CLI: {', '.join(apps['media_cli']) or 'wpctl'}
   - GUI Automation: {', '.join(apps['desktop_tools'])}
 
@@ -92,14 +94,17 @@ def main():
 
 ## 3. Real-Time Multi-Cursor Computer-Use Protocol (`caelestia-desktop`)
 - Every `caelestia-desktop` command supports `--agent <Tag>` (e.g., `--agent "Meow AI"`, `--agent Browser`, `--agent Control`) to render distinct color-coded live 120Hz pointers & click ripples (primary cursor stays alive throughout the task; parallel workers add auxiliary cursors via `flock`).
+- **Fast Helpers (1-Command, Zero Exploration):**
+  - YouTube Search + Play + Audio Check (`min-y=185` skips search bar): `caelestia-desktop yt-play "<song/video query>" --agent Browser`
+  - Instant Word `.docx` Generator (zero dependencies): `caelestia-desktop write-docx ~/Documents/<file>.docx --title "<Title>" --file /tmp/body.txt`
 - **Fast Text Clicker (`~0.8s`, Zero Vision Wait):**
-  - `caelestia-desktop click-text "<text>" [--window firefox|quickshell] [--wait 5] [--agent <Tag>]` -> accent-insensitive OCR (`Hoa Minzy` matches `Hòa Minzy`) + smooth glide + click in ONE command!
-  - `caelestia-desktop find "<text>" [--window <app>] [--wait 3]` -> returns exact pixel `(x, y)` coordinates.
-- **Zero-Screenshot Browser Rule:** NEVER open `youtube.com` homepage + take screenshots just to click search! Launch `https://www.youtube.com/results?search_query=<query>` directly and chain `&& caelestia-desktop click-text "<keyword>" --window firefox --wait 5 --agent Browser`.
+  - `caelestia-desktop click-text "<text>" [--window firefox|quickshell] [--min-y 185] [--wait 5] [--agent <Tag>]` -> accent-insensitive OCR + smooth glide + click in ONE command!
+  - `caelestia-desktop find "<text>" [--window <app>] [--min-y 185] [--wait 3]` -> returns exact pixel `(x, y)` coordinates.
+- **Zero-Screenshot Browser Rule:** NEVER open `youtube.com` homepage + take screenshots! For YouTube playback, ALWAYS use `caelestia-desktop yt-play "<query>" --agent Browser` (or launch `https://www.youtube.com/results?search_query=<query>` + `click-text ... --min-y 185`).
 - **Fallback GUI Actions (when element has no text label, like thumbnails/icons):**
   - Fast grid screenshot + 1px click: `caelestia-desktop screen --grid --fast --out /tmp/ai_screen.jpg --agent Browser` -> `view_file` -> `caelestia-desktop click <x> <y> --agent Browser`
   - Window / Type / Keys / Scroll: `caelestia-desktop windows`, `launch`, `focus`, `type "<text>" --enter`, `key ctrl+l`, `scroll -5 --x <x> --y <y>`.
-- **Multi-Surface Parallel:** Never execute terminal barriers (`caelestia shell lock lock`) inside a parallel track when Browser/App work is still running.
+- **Multi-Surface Parallel & Safety:** NEVER run `caelestia shell lock lock` inside an LLM worker/single step — lock barriers run strictly after verified completion.
 
 ## 4. Coding & Verification Standard
 - Never claim checks pass without running them (`qmllint`, `python3 -m py_compile`, `bash -n`).
