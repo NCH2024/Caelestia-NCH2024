@@ -38,7 +38,7 @@ DEFAULT_THRESHOLD = 0.62
 DEFAULT_WAKE_PHRASES = ["mi mi", "mimi", "hey mi mi", "hey mimi", "hello mi mi", "hello mimi", "my my", "me me"]
 WAKE_REGEX = re.compile(
     r"\b(?:h(?:e|a)y\s+|hello\s+|hi\s+)?(?:mi[\s-]*mi|mimi|me[\s-]*me|my[\s-]*my|mew[\s-]*mew)\b|"
-    r"\b(?:h(?:e|a)y|hello)\s+mini\b",
+    r"\b(?:h(?:e|a)y|hello)\s+(?:mini|am\s+i)\b",
     re.IGNORECASE,
 )
 
@@ -320,17 +320,25 @@ def transcribe_pcm(
     model_size: str = "base",
     lang: str = "vi",
     vad_filter: bool = True,
-    initial_prompt: str | None = None,
+    max_new_tokens: int = 96,
 ) -> str:
     if len(pcm_i16) < 3200:
         return ""
     model = get_whisper_model(model_size)
     audio_f32 = normalize_for_asr(pcm_i16)
-    kwargs = {"language": lang, "beam_size": 1, "vad_filter": vad_filter}
-    if initial_prompt:
-        kwargs["initial_prompt"] = initial_prompt
+    kwargs = {
+        "language": lang,
+        "beam_size": 1,
+        "vad_filter": vad_filter,
+        "condition_on_previous_text": False,
+        "no_speech_threshold": 0.65,
+        "max_new_tokens": max_new_tokens,
+    }
+    if vad_filter:
+        kwargs["vad_parameters"] = {"min_silence_duration_ms": 450, "threshold": 0.30}
     segs, _ = model.transcribe(audio_f32, **kwargs)
-    return " ".join(s.text.strip() for s in segs).strip()
+    kept = [s.text.strip() for s in segs if getattr(s, "no_speech_prob", 0.0) <= 0.72 and s.text.strip()]
+    return " ".join(kept).strip()
 
 
 def cmd_train(args):
@@ -355,9 +363,15 @@ def cmd_listen_once(args):
     """Capture one voice command immediately (without waiting for wake word) and dispatch to Meow AI."""
     play_chime(async_play=True)
     ipc_voice_state("listening", "Mi Mi đang nghe lệnh...")
-    pcm = record_spoken_utterance(max_sec=8.5)
+    pcm, had_speech = record_spoken_utterance(max_sec=11.0)
+    if not had_speech:
+        ipc_voice_state("error", "Chưa nghe thấy lệnh — vui lòng thử lại")
+        time.sleep(1.5)
+        ipc_voice_state("idle", "")
+        print(json.dumps({"ok": False, "error": "No speech detected"}))
+        sys.exit(1)
     ipc_voice_state("thinking", "Đang nhận diện giọng nói...")
-    txt = strip_wake_prefix(transcribe_pcm(pcm, model_size=args.model, lang=args.lang))
+    txt = strip_wake_prefix(transcribe_pcm(pcm, model_size=args.model, lang=args.lang, vad_filter=True))
     if not txt:
         ipc_voice_state("error", "Không nghe rõ lệnh — vui lòng thử lại")
         time.sleep(1.6)
@@ -375,42 +389,75 @@ def cmd_listen_once(args):
     print(json.dumps({"ok": True, "text": txt}, ensure_ascii=False))
 
 
-def record_spoken_utterance(max_sec: float = 8.5, sr: int = 16000, vad_thr: float = 0.004) -> np.ndarray:
-    """Stream high-sensitive laptop DMIC audio until 1.2s trailing silence after speech starts."""
-    chunk_bytes = int(0.18 * sr * 2)  # 180ms frames
-    proc = subprocess.Popen(mic_stream_cmd(sr), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+def _read_chunk(stdout_fh, n_bytes: int) -> np.ndarray | None:
+    raw = stdout_fh.read(n_bytes)
+    if not raw:
+        return None
+    return np.frombuffer(raw[: len(raw) - (len(raw) % 2)], dtype=np.int16)
+
+
+def capture_from_open_stream(
+    stdout_fh,
+    vad_thr: float = 0.0040,
+    sr: int = 16000,
+    min_wait_sec: float = 3.2,
+    start_timeout_sec: float = 6.5,
+    max_sec: float = 12.0,
+) -> tuple[np.ndarray, bool]:
+    """Read spoken command from ALREADY OPEN mic pipe (0ms reopen delay, tracks deterministic sample time)."""
+    chunk_bytes = int(0.15 * sr * 2)  # 150ms frames
     frames = []
     started = False
+    speech_streak = 0
     silent_chunks = 0
-    t0 = time.time()
-    try:
-        while (time.time() - t0) < max_sec:
-            raw = proc.stdout.read(chunk_bytes)
-            if not raw:
-                break
-            arr = np.frombuffer(raw[: len(raw) - (len(raw) % 2)], dtype=np.int16)
-            if len(arr) == 0:
-                continue
-            rms = ac_rms(arr)
-            frames.append(arr)
-            if rms > vad_thr:
+    total_samples = 0
+    while True:
+        audio_sec = total_samples / float(sr)
+        if audio_sec >= max_sec:
+            break
+        if not started and audio_sec >= start_timeout_sec:
+            break
+        arr = _read_chunk(stdout_fh, chunk_bytes)
+        if arr is None:
+            break
+        if len(arr) == 0:
+            continue
+        frames.append(arr)
+        total_samples += len(arr)
+        audio_sec = total_samples / float(sr)
+        # Skip brief chime bleed during very first 0.25s of audio
+        if audio_sec < 0.25:
+            continue
+        rms = ac_rms(arr)
+        if rms > vad_thr:
+            speech_streak += 1
+            silent_chunks = 0
+            if speech_streak >= 2:  # >= 300ms real speech (ignores 1-tap click)
                 started = True
-                silent_chunks = 0
-            elif started:
+        else:
+            speech_streak = 0
+            if started:
                 silent_chunks += 1
-                if silent_chunks >= 7 and (time.time() - t0) >= 0.9:
+                if audio_sec >= min_wait_sec and silent_chunks >= 11:  # ~1.65s trailing pause after last word
                     break
+    return (np.concatenate(frames) if frames else np.array([], dtype=np.int16)), started
+
+
+def record_spoken_utterance(max_sec: float = 11.0, sr: int = 16000, vad_thr: float = 0.0040) -> tuple[np.ndarray, bool]:
+    """Open temporary clean mic stream for one-shot commands."""
+    proc = subprocess.Popen(mic_stream_cmd(sr), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        return capture_from_open_stream(proc.stdout, vad_thr=vad_thr, sr=sr, min_wait_sec=2.8, start_timeout_sec=6.0, max_sec=max_sec)
     finally:
         proc.terminate()
         try:
             proc.wait(timeout=1.0)
         except Exception:
             proc.kill()
-    return np.concatenate(frames) if frames else np.array([], dtype=np.int16)
 
 
 def cmd_daemon(args):
-    """High-sensitivity always-on laptop DMIC wake listener for 'Mi Mi / Hey Mi Mi / Hello Mi Mi'."""
+    """Sub-300ms continuous-stream wake listener (never drops/reopens mic between wake & command!)."""
     running = True
 
     def stop_handler(*_):
@@ -420,9 +467,12 @@ def cmd_daemon(args):
     signal.signal(signal.SIGTERM, stop_handler)
     signal.signal(signal.SIGINT, stop_handler)
 
+    # Pre-warm BOTH wake model (tiny) & command model so zero cold load lag on command
     get_whisper_model("tiny")
+    get_whisper_model(args.model)
+
     sr = 16000
-    chunk_bytes = int(0.25 * sr * 2)
+    chunk_bytes = int(0.15 * sr * 2)  # 150ms responsiveness (was 250ms!)
     cmd = mic_stream_cmd(sr)
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     ring = []
@@ -430,49 +480,50 @@ def cmd_daemon(args):
     baseline_pk = []
     ambient = 0.0020
     ambient_pk = 0.015
-    vad_thr = 0.0042
-    peak_thr = 0.032
+    vad_thr = 0.0045
+    peak_thr = 0.028
     cooldown_until = 0.0
     ipc_voice_state("ready", "Mi Mi sẵn sàng — hãy gọi 'Mi Mi'")
-    _log_dbg("Daemon started & warmed up.")
+    _log_dbg("Daemon started & warmed up (continuous stream).")
 
     try:
         while running:
-            raw = proc.stdout.read(chunk_bytes)
-            if not raw:
-                time.sleep(0.2)
+            arr = _read_chunk(proc.stdout, chunk_bytes)
+            if arr is None:
+                time.sleep(0.25)
+                if proc.poll() is not None and running:
+                    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                    ring.clear()
                 continue
-            arr = np.frombuffer(raw[: len(raw) - (len(raw) % 2)], dtype=np.int16)
             if len(arr) == 0:
                 continue
             ring.append(arr)
-            if len(ring) > 8:  # ~2.0s rolling window
+            if len(ring) > 10:  # ~1.50s crisp rolling window
                 ring.pop(0)
             ac = clean_ac_float(arr)
             rms = float(np.sqrt(np.mean(ac * ac)))
             pk = float(np.max(np.abs(ac)))
 
-            if len(baseline_rms) < 4:
+            if len(baseline_rms) < 5:
                 baseline_rms.append(rms)
                 baseline_pk.append(pk)
-                if len(baseline_rms) == 4:
+                if len(baseline_rms) == 5:
                     ambient = max(0.0008, float(np.median(baseline_rms)))
                     ambient_pk = max(0.008, float(np.median(baseline_pk)))
-                    vad_thr = max(0.0032, min(0.025, ambient * 2.2))
-                    peak_thr = max(0.020, min(0.12, ambient_pk * 2.4))
+                    vad_thr = max(0.0036, min(0.025, ambient * 2.3))
+                    peak_thr = max(0.022, min(0.12, ambient_pk * 2.5))
                     _log_dbg(f"Calibrated ambient={ambient:.5f} vad_thr={vad_thr:.5f} peak_thr={peak_thr:.5f}")
                 continue
 
             if rms < vad_thr and pk < peak_thr:
-                # Slowly adapt ambient baseline during genuine silence
                 ambient = 0.94 * ambient + 0.06 * rms
-                vad_thr = max(0.0032, min(0.025, ambient * 2.2))
+                vad_thr = max(0.0036, min(0.025, ambient * 2.3))
                 continue
 
-            if time.time() < cooldown_until or len(ring) < 3:
+            if time.time() < cooldown_until or len(ring) < 5:
                 continue
 
-            window_pcm = np.concatenate(ring[-7:])
+            window_pcm = np.concatenate(ring[-9:])  # ~1.35s
             prof = load_profile()
             samples = prof.get("samples") or []
             if samples:
@@ -481,42 +532,42 @@ def cmd_daemon(args):
                 if best_sim < float(prof.get("threshold", DEFAULT_THRESHOLD)):
                     continue
 
-            phrase_vi = transcribe_pcm(
-                window_pcm,
-                model_size="tiny",
-                lang="vi",
-                vad_filter=False,
-                initial_prompt="Mi Mi, Hey Mi Mi, Hello Mi Mi, Mì Mì.",
-            )
+            t_w = time.time()
+            # Fast single-pass non-looping wake inference (~0.22s!)
+            phrase_vi = transcribe_pcm(window_pcm, model_size="tiny", lang="vi", vad_filter=False, max_new_tokens=10)
             matched = matches_wake(phrase_vi)
             phrase_en = ""
-            if not matched:
-                phrase_en = transcribe_pcm(
-                    window_pcm,
-                    model_size="tiny",
-                    lang="en",
-                    vad_filter=False,
-                    initial_prompt="Mi Mi, Hey Mi Mi, Hello Mi Mi.",
-                )
+            if not matched and phrase_vi:
+                # Only try EN fallback if VI returned plausible words (saves CPU on silence!)
+                phrase_en = transcribe_pcm(window_pcm, model_size="tiny", lang="en", vad_filter=False, max_new_tokens=10)
                 matched = matches_wake(phrase_en)
-            _log_dbg(f"Trig rms={rms:.4f} pk={pk:.4f} vi={phrase_vi!r} en={phrase_en!r} match={matched}")
+            dt_w = time.time() - t_w
+            _log_dbg(f"Trig({dt_w:.2f}s) rms={rms:.4f} pk={pk:.4f} vi={phrase_vi!r} en={phrase_en!r} match={matched}")
             if not matched:
-                # Throttle repeated triggers on non-wake chatter slightly
-                cooldown_until = time.time() + 0.4
+                cooldown_until = time.time() + 0.35
                 continue
 
-            # Wake word detected! Instant chime + glowing top HUD pill
-            proc.terminate()
-            try:
-                proc.wait(timeout=1.0)
-            except Exception:
-                proc.kill()
+            # Wake matched (~0.25s)! Show HUD & play chime immediately, read from SAME open pipe (0ms mic gap!)
             ring.clear()
             play_chime(async_play=True)
-            ipc_voice_state("listening", "Mi Mi đã thức — Đang nghe lệnh...")
-            cmd_pcm = record_spoken_utterance(max_sec=8.5, vad_thr=max(0.0030, ambient * 1.8))
-            ipc_voice_state("thinking", "Đang hiểu lệnh...")
-            raw_spoken = transcribe_pcm(cmd_pcm, model_size=args.model, lang=args.lang, vad_filter=False)
+            ipc_voice_state("listening", "Mi Mi đã thức — Hãy nói lệnh của bạn...")
+            cmd_pcm, had_speech = capture_from_open_stream(
+                proc.stdout,
+                vad_thr=max(0.0036, ambient * 2.1),
+                min_wait_sec=3.2,
+                start_timeout_sec=6.5,
+                max_sec=12.0,
+            )
+            if not had_speech:
+                _log_dbg("Spoken timeout (user did not speak after wake).")
+                ipc_voice_state("error", "Chưa nghe thấy lệnh — Hãy gọi lại 'Mi Mi'")
+                time.sleep(1.5)
+                ipc_voice_state("ready", "Mi Mi sẵn sàng — hãy gọi 'Mi Mi'")
+                cooldown_until = time.time() + 1.0
+                continue
+
+            ipc_voice_state("thinking", "Đang nhận diện giọng nói...")
+            raw_spoken = transcribe_pcm(cmd_pcm, model_size=args.model, lang=args.lang, vad_filter=True, max_new_tokens=96)
             spoken = strip_wake_prefix(raw_spoken)
             _log_dbg(f"Spoken raw={raw_spoken!r} -> clean={spoken!r}")
             if spoken:
@@ -528,12 +579,10 @@ def cmd_daemon(args):
                     start_new_session=True,
                 )
             else:
-                ipc_voice_state("error", "Không nghe rõ lệnh — hãy gọi lại 'Mi Mi'")
-                time.sleep(1.8)
-            cooldown_until = time.time() + 2.0
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            if not spoken:
+                ipc_voice_state("error", "Không nghe rõ lệnh — Hãy gọi lại 'Mi Mi'")
+                time.sleep(1.5)
                 ipc_voice_state("ready", "Mi Mi sẵn sàng — hãy gọi 'Mi Mi'")
+            cooldown_until = time.time() + 2.0
     finally:
         proc.terminate()
         ipc_voice_state("off", "")
