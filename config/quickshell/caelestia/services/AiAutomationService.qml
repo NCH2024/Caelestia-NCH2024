@@ -40,7 +40,7 @@ Singleton {
     property bool allowDesktopActions: true
     property bool askOnInvalidResult: true
     property bool showGhostCursor: true
-    property bool preferVisualCursor: false
+    property bool preferVisualCursor: true
     property int logRetentionDays: 30 // 7, 14, 30, 90, 180, or 0 (never)
 
     // Persistent conversation history & log storage
@@ -51,18 +51,15 @@ Singleton {
     property int totalLogFiles: 0
     property int totalLogBytes: 0
 
-    // Compact Mini HUD & Animated AI Ghost Cursor states
+    // Compact Mini HUD & Multi-Cursor Animated AI Overlay states
     property bool miniHudVisible: false
     property bool miniHudHovered: false
     property bool compactRunActive: false
-    property real cursorX: 960
-    property real cursorY: 540
-    property string cursorAction: "move"
-    property string cursorLabel: ""
-    property real cursorOverlayOpacity: 0.0
+    property var activeCursors: []
 
     signal monitorRequested()
-    signal cursorPulseTriggered()
+    signal cursorUpdated(string cursorId, real x, real y, string action, string label, string colorHex, bool clicked)
+    signal cursorExpired(string cursorId)
 
     // Runtime orchestration & chat state
     property bool loaded: false
@@ -306,17 +303,46 @@ Singleton {
         Quickshell.execDetached(["bash", "-c", `mkdir -p '${root.logsDir}' && setsid -f xdg-open '${root.logsDir}' >/dev/null 2>&1`]);
     }
 
-    function updateCursor(x: int, y: int, action: string, label: string, clicked: bool): void {
+    function cursorPaletteColor(agentId: string): string {
+        const lower = String(agentId || "").toLowerCase();
+        if (lower.includes("browser") || lower.includes("web") || lower.includes("youtube"))
+            return "#38BDF8"; // Sky Cyan
+        if (lower.includes("control") || lower.includes("system") || lower.includes("setting") || lower.includes("mode"))
+            return "#F59E0B"; // Amber Gold
+        if (lower.includes("editor") || lower.includes("code") || lower.includes("app"))
+            return "#34D399"; // Emerald Mint
+        if (lower.includes("research") || lower.includes("data"))
+            return "#F472B6"; // Pink Rose
+        return "#60A5FA"; // Default Vibrant Blue
+    }
+
+    function updateCursor(x: int, y: int, action: string, label: string, clicked: bool, agentId: string): void {
         if (!showGhostCursor)
             return;
-        cursorX = x;
-        cursorY = y;
-        cursorAction = action || "move";
-        cursorLabel = label || "Operating";
-        cursorOverlayOpacity = 1.0;
-        if (clicked)
-            cursorPulseTriggered();
-        cursorHideTimer.restart();
+        const cid = String(agentId || "Meow AI").trim() || "Meow AI";
+        const now = Date.now();
+        const next = (activeCursors || []).slice();
+        const idx = next.findIndex(c => c.id === cid);
+        const prevTick = idx >= 0 ? Number(next[idx].pulseTick || 0) : 0;
+        const col = cursorPaletteColor(cid);
+        const entry = {
+            id: cid,
+            x: x,
+            y: y,
+            action: action || "move",
+            label: label || "Operating",
+            colorHex: col,
+            pulseTick: clicked ? (prevTick + 1) : prevTick,
+            updatedAt: now
+        };
+        if (idx >= 0)
+            next[idx] = entry;
+        else
+            next.push(entry);
+        // Keep max 4 visible concurrent cursors
+        activeCursors = next.slice(-4);
+        cursorUpdated(cid, x, y, entry.action, entry.label, col, clicked);
+        cursorPruneTimer.restart();
     }
 
     function refreshEnvironment(): void {
@@ -668,10 +694,23 @@ Singleton {
     }
 
     Timer {
-        id: cursorHideTimer
-        interval: 2200
-        repeat: false
-        onTriggered: root.cursorOverlayOpacity = 0.0
+        id: cursorPruneTimer
+        interval: 600
+        repeat: true
+        onTriggered: {
+            const now = Date.now();
+            const kept = [];
+            for (const c of (root.activeCursors || [])) {
+                if ((now - Number(c.updatedAt || 0)) < 3200)
+                    kept.push(c);
+                else
+                    root.cursorExpired(c.id);
+            }
+            if (kept.length !== (root.activeCursors || []).length)
+                root.activeCursors = kept;
+            if (kept.length === 0)
+                stop();
+        }
     }
 
     Timer {

@@ -48,7 +48,7 @@
   - Compiled Qt6 GLSL Fresnel optical shader (`liquid_glass.frag.qsb`) applied globally across `StyledRect` cards and panels, paired with Hyprland multi-pass vibrancy blur (`size 16`, `passes 4`, `vibrancy 0.36`) for subtle curved specular rims and crystal-clear glass depth (automatically disabled for 0% overhead in Game Mode / Battery Saver).
 - **AI Task Automation (`AI Automation` + `SUPER + >`):**
   - Deep **Antigravity CLI (`agy`)** integration in Nexus Settings: detects installation & login state (`agy`), lists all discovered models dynamically, supports **Chat Language selection** (`Tiếng Việt`, `English`, `Auto`), and enables **automatic quota/rate-limit model failover**.
-  - **Coordinator & Execution Engine (`Meow AI`):** Uses an adaptive 3-tier router (`direct` Q&A in ~4s, `single` cached unified agent with KV prompt caching, and `multi` parallel 2–3 track specialists + autonomous polish loop for heavy builds). Preloads host context cleanly via `~/AGENTS.md` (`build_system_map.py`) and operates browsers/desktop apps using calibrated `caelestia-desktop` (`1px`-calibrated `ydotool`, grid screenshots, UTF-8 typing, OCR) inline inside Rich-Markdown **Meow AI Assistant** (`fcitx5` Vietnamese IME enabled).
+  - **Coordinator & Execution Engine (`Meow AI`):** Uses an adaptive router (`Tier 0` local fast-path, `direct` Q&A, `single` cached unified agent, and `multi` parallel 2–3 track specialists). Preloads host context cleanly via `~/AGENTS.md` (`build_system_map.py`) and operates browsers/desktop apps in real time with **Multi-Cursor Visual GUI Automation** (`caelestia-desktop` `find` / `click-text` via Tesseract OCR, `fcntl`-locked `1px`-calibrated `ydotool`, UTF-8 typing, and up to 4 concurrent color-coded Ghost Cursors).
   - **Persistent Quota Cooldown Cache:** Tracks per-model `429` reset timers (`ai_model_cooldowns.json`) and displays live `Ready` / `Cooldown` badges in Nexus so exhausted models are skipped automatically with zero retry storms.
   - **Persistent Chat History & Log Retention:** Automatically saves conversations (`~/.local/share/caelestia/ai/history.json`) and raw execution logs (`logs/*.log`) with an in-chat **History** browser (`restore chat` / `view log` / `delete`) and configurable auto-cleanup from **7 days (1 week) up to 180 days (6 months)** or manual one-click wipe in Nexus Settings.
   - **Quick Launch (`SUPER + >` / `>ai <command>`):** Jumps straight into AI prompt entry inside the Caelestia Launcher (every new request starts a fresh chat automatically).
@@ -141,10 +141,10 @@ Press **`SUPER + >`** (or type `>ai <command>` in the Launcher with full `fcitx5
 
 ---
 
-### Meow AI Ghost Cursor & Compact Super HUD (`SUPER + >`)
-Invoking a task via **`SUPER + >`** (`>ai <command>`) shows a sleek compact **Mini Progress Popup** directly above the launcher area (expanding full Chat only when clicked) while **Tier 0 Local Fast-Path** executes instant mode/audio/app commands in `< 0.2s` and **`AiCursorOverlay`** renders a smooth 120Hz animated pointer cursor + click ripple during GUI automation.
+### Meow AI Multi-Cursor GUI Automation & Mini HUD (`SUPER + >`)
+Invoking a task via **`SUPER + >`** (`>ai <command>`) shows a sleek compact **Mini Progress Popup** directly above the launcher area while parallel AI workers control separate apps visually with independent color-coded **120Hz Ghost Cursors** (e.g., Cyan `Browser` + Amber `Control`), click ripples, and sub-second OCR targeting (`caelestia-desktop click-text`).
 
-![Meow AI Ghost Cursor and Mini HUD](assets/screenshots/ai-ghost-cursor.png)
+![Meow AI Multi-Cursor GUI Automation](assets/screenshots/ai-ghost-cursor.png)
 
 ---
 

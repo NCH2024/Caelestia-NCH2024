@@ -1,22 +1,24 @@
 {
-  "enabled": true,
-  "supervisorModel": "gemini-4-hydrogen-high",
-  "workerModel": "gemini-4-hydrogen-medium",
-  "chatLanguage": "auto",
-  "autoSwitchOnQuota": true,
-  "fallbackModels": [
-    "gemini-4-hydrogen-high",
-    "gemini-4-hydrogen-medium",
-    "gemini-4-hydrogen-low",
-    "claude-opus-5-5-medium",
-    "claude-opus-5-5-low",
-    "claude-sonnet-5-5-high",
-    "gemini-3.8-flash-high",
-    "gemini-4-argon-high",
-    "gpt-oss-120b-medium"
-  ],
-  "fullPermissions": true,
-  "openWorkerTerminal": false,
-  "allowDesktopActions": true,
-  "askOnInvalidResult": true
+    "enabled": true,
+    "supervisorModel": "gemini-4-hydrogen-high",
+    "workerModel": "gemini-4-hydrogen-medium",
+    "chatLanguage": "auto",
+    "autoSwitchOnQuota": true,
+    "fallbackModels": [
+        "gemini-4-hydrogen-high",
+        "gemini-4-hydrogen-medium",
+        "gemini-4-hydrogen-low",
+        "claude-opus-5-5-medium",
+        "claude-opus-5-5-low",
+        "claude-sonnet-5-5-high",
+        "gemini-3.8-flash-high",
+        "gemini-4-argon-high",
+        "gpt-oss-120b-medium"
+    ],
+    "fullPermissions": true,
+    "openWorkerTerminal": false,
+    "allowDesktopActions": true,
+    "askOnInvalidResult": true,
+    "preferVisualCursor": true,
+    "showGhostCursor": true
 }

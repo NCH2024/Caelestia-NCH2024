@@ -200,7 +200,7 @@ class Orchestrator:
         self.auto_switch = bool(config.get("autoSwitchOnQuota", True))
         self.full_perms = bool(config.get("fullPermissions", True))
         self.allow_desktop = bool(config.get("allowDesktopActions", True))
-        self.prefer_visual_cursor = bool(config.get("preferVisualCursor", False))
+        self.prefer_visual_cursor = bool(config.get("preferVisualCursor", True))
         self.ask_on_invalid = bool(config.get("askOnInvalidResult", True))
         self.chat_language = str(config.get("chatLanguage", "vi") or "vi").lower()
         self.cwd = config.get("cwd") or os.path.expanduser("~")
@@ -593,9 +593,12 @@ class Orchestrator:
             desktop_rule = "Desktop GUI actions are DISABLED; use CLI/files only."
         elif wants_visual:
             desktop_rule = (
-                "VISUAL CURSOR MODE ACTIVE: Use visible GUI mouse interactions (`caelestia-desktop launch`, "
-                "`caelestia-desktop focus`, `caelestia-desktop screen --grid`, `caelestia-desktop click <x> <y>`, "
-                "`caelestia-desktop type ...`) to operate buttons/search bars on-screen so the animated cursor is visible."
+                "VISUAL REAL-TIME CURSOR MODE ACTIVE: The user wants to SEE animated AI cursors visibly glide and click UI elements on-screen!\n"
+                "- Do NOT silently scrape with `curl` or bypass interactive UI controls when opening browsers/apps or toggling visual panels.\n"
+                "- Use `caelestia-desktop` with distinct `--agent <Tag>` names (`--agent Browser`, `--agent Control`, `--agent Editor`) so colored 120Hz Ghost Cursors appear live:\n"
+                "  1) Launch/focus app (`caelestia-desktop launch firefox \"https://www.youtube.com\" --agent Browser`).\n"
+                "  2) Use `caelestia-desktop click-text \"<label>\" --window <app> --agent <Tag>` OR `caelestia-desktop screen --grid --out /tmp/ai_screen.png --agent <Tag>` + `view_file` + `click <x> <y> --agent <Tag>` to click search bars, buttons, thumbnails, and UI cards visually!\n"
+                "  3) Type queries with `caelestia-desktop type \"<text>\" --enter --agent <Tag>`."
             )
         else:
             desktop_rule = "Desktop GUI control (`caelestia-desktop`) is ALLOWED."
@@ -978,6 +981,42 @@ class Orchestrator:
             return
 
         if not self.looks_heavy_engineering(user_task):
+            # When visual cursor mode is active and request spans Browser + Control/App surfaces simultaneously,
+            # launch 2 parallel visual cursor tracks (`Browser` + `Control`) directly (0ms router overhead!)
+            low = user_task.lower()
+            has_browser = bool(re.search(r"\b(trình duyệt|browser|firefox|youtube|google|web|bài báo|trang web)\b", low))
+            has_control = bool(re.search(r"\b(chế độ|mode|cài đặt|settings|nexus|bảng điều khiển|độ sáng|âm lượng|equalizer|phần mềm|thống kê)\b", low))
+            if self.allow_desktop and self.prefer_visual_cursor and has_browser and has_control:
+                self.logger.write("Local router -> parallel multi-cursor GUI tracks (Browser + Control).", "\033[1;36m")
+                multi_triage = {
+                    "plan_summary": (
+                        "Đang điều phối đồng thời 2 con trỏ AI thao tác trên Trình duyệt và Bảng điều khiển."
+                        if self.is_vi()
+                        else "Operating Browser and Control Panel simultaneously with live visual cursors."
+                    ),
+                    "success_criteria": "Both the browser action and control-panel/app action complete visually and are verified.",
+                    "collaborators": [
+                        {
+                            "role_name": "Browser",
+                            "prompt": (
+                                "Handle ONLY the browser/web portion of USER REQUEST visually with `caelestia-desktop --agent Browser`: "
+                                "launch/focus firefox, click search bar (`screen --grid` + `view_file` or `find`/`click-text`), type query with `--agent Browser`, click target video/article visually."
+                            ),
+                            "parallel": True,
+                        },
+                        {
+                            "role_name": "Control",
+                            "prompt": (
+                                "Handle ONLY the system settings/control panel/secondary app portion of USER REQUEST visually with `caelestia-desktop --agent Control`: "
+                                "for system modes open `caelestia shell nexus openPage 0` and use `caelestia-desktop click-text` / `click --agent Control` on the visible UI controls (and verify final state via `caelestia shell`/`brightnessctl`/`playerctl` or target app window)."
+                            ),
+                            "parallel": True,
+                        },
+                    ],
+                }
+                self.run_multi_agent(user_task, multi_triage, self.supervisor_model)
+                return
+
             # Direct Unified Single-Session Execution (saves 4-6s + ~10k tokens vs separate Router boot)
             plan_msg = (
                 "Đang thực thi trực tiếp trong 1 phiên hợp nhất..."

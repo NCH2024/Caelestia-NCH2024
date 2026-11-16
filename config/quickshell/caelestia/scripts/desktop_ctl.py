@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
 Caelestia Desktop Control Utility (`caelestia-desktop`)
-Reliable Wayland/Hyprland GUI automation bridge for AI agents:
-- Screen capture with optional calibrated pixel coordinate grid (`grim` + `PIL`)
-- Hyprland window inspection & focusing (supports both Lua `hl.dsp` & standard dispatchers)
-- Closed-loop calibrated pointer control (`ydotool` + `hyprctl cursorpos`)
+Multi-cursor, thread-safe Wayland/Hyprland GUI automation bridge for AI agents:
+- Physical pointer/keyboard serialization (`flock`) so multiple parallel agents never collide
+- Named multi-cursor visual HUD events (`--agent Browser`, `--agent Control`, etc.) at 120Hz
+- Closed-loop 1px calibrated smooth cursor gliding (`ydotool` + `hyprctl cursorpos`)
+- Sub-second UI text locator (`find` / `click-text`) via `tesseract` + window cropping
 - Full UTF-8 / Vietnamese typing via clipboard paste (`wl-copy` + `Ctrl+V`)
-- Clean hotkey combos using Linux evdev keycodes
-- Fast on-screen OCR (`tesseract`)
 """
 
 import argparse
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 import subprocess
@@ -19,7 +20,8 @@ import time
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
-# Linux input-event-codes.h keycodes for ydotool key
+LOCK_PATH = "/tmp/caelestia_pointer.lock"
+
 KEYCODES = {
     "esc": 1, "escape": 1,
     "1": 2, "2": 3, "3": 4, "4": 5, "5": 6, "6": 7, "7": 8, "8": 9, "9": 10, "0": 11,
@@ -49,6 +51,18 @@ BUTTON_CODES = {
 
 def run(cmd: list[str], input_text: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, input=input_text, capture_output=True, text=True)
+
+
+@contextmanager
+def pointer_lock():
+    """Serialize physical ydotool mouse/keyboard calls across parallel AI agents."""
+    f = open(LOCK_PATH, "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(f, fcntl.LOCK_UN)
+        f.close()
 
 
 def ensure_ydotool():
@@ -81,13 +95,13 @@ def get_cursor_pos() -> tuple[int, int]:
         return -1, -1
 
 
-def notify_hud(x: int, y: int, action: str, label: str = "", clicked: bool = False):
-    """Fire-and-forget 120Hz visual AI ghost cursor & ripple update in Quickshell."""
+def notify_hud(x: int, y: int, action: str, label: str = "", clicked: bool = False, agent: str = "Meow AI"):
+    """Fire-and-forget 120Hz visual AI ghost cursor update (supports multiple named cursors)."""
     try:
         subprocess.Popen(
             [
                 "qs", "-c", "caelestia", "ipc", "call", "ai", "cursorEvent",
-                str(int(x)), str(int(y)), str(action), str(label), "1" if clicked else "0",
+                str(int(x)), str(int(y)), str(action), str(label), "1" if clicked else "0", str(agent or "Meow AI"),
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -97,7 +111,7 @@ def notify_hud(x: int, y: int, action: str, label: str = "", clicked: bool = Fal
         pass
 
 
-def calibrated_move(tx: int, ty: int, action_label: str = "Moving cursor"):
+def calibrated_move(tx: int, ty: int, action_label: str = "Moving", agent: str = "Meow AI"):
     """Smooth human-like eased move + closed-loop pointer calibration within a few pixels."""
     ensure_ydotool()
     w, h, _ = get_monitor_info()
@@ -108,11 +122,10 @@ def calibrated_move(tx: int, ty: int, action_label: str = "Moving cursor"):
     if sx < 0 or sy < 0:
         sx, sy = w // 2, h // 2
 
-    notify_hud(tx, ty, "move", action_label, False)
+    notify_hud(tx, ty, "move", action_label, False, agent)
 
-    # Smooth eased steps (cubic-out) so the physical cursor glides naturally like a human hand
     dist = ((tx - sx) ** 2 + (ty - sy) ** 2) ** 0.5
-    steps = max(4, min(14, int(dist / 90))) if dist > 20 else 1
+    steps = max(5, min(16, int(dist / 80))) if dist > 20 else 1
     scale_x, scale_y = 0.5, 0.5
     for step in range(1, steps + 1):
         u = step / steps
@@ -123,7 +136,7 @@ def calibrated_move(tx: int, ty: int, action_label: str = "Moving cursor"):
         if step < steps:
             time.sleep(0.012)
 
-    time.sleep(0.05)
+    time.sleep(0.04)
     ax, ay = get_cursor_pos()
     if ax < 0 or (abs(ax - tx) <= 4 and abs(ay - ty) <= 4):
         return ax, ay
@@ -133,7 +146,7 @@ def calibrated_move(tx: int, ty: int, action_label: str = "Moving cursor"):
     if ay > 20 and ty > 20:
         scale_y = scale_y * (ty / ay)
     run(["ydotool", "mousemove", "--absolute", "-x", str(round(tx * scale_x)), "-y", str(round(ty * scale_y))])
-    time.sleep(0.05)
+    time.sleep(0.04)
     return get_cursor_pos()
 
 
@@ -156,7 +169,6 @@ def draw_grid(img_path: str):
     w, h = im.size
     font = ImageFont.load_default()
 
-    # Major 200px lines & labels, minor 100px dashed hints
     for x in range(0, w, 100):
         is_major = (x % 200 == 0)
         color = (0, 255, 255, 130) if is_major else (0, 255, 255, 50)
@@ -177,34 +189,107 @@ def draw_grid(img_path: str):
     out.save(img_path)
 
 
-def hypr_focus(target: str) -> bool:
-    """Focus window matching address/title/class safely across Lua & vanilla Hyprland."""
+def find_client(target: str) -> dict | None:
     res = run(["hyprctl", "clients", "-j"])
     try:
         clients = json.loads(res.stdout)
     except Exception:
-        return False
-
+        return None
     low = target.lower()
-    match = None
     for c in clients:
         if c.get("address", "").lower() == low:
-            match = c
-            break
-    if not match:
-        for c in clients:
-            if low in c.get("class", "").lower() or low in c.get("title", "").lower():
-                match = c
-                break
+            return c
+    for c in clients:
+        if low in c.get("class", "").lower() or low in c.get("title", "").lower():
+            return c
+    return None
+
+
+def hypr_focus(target: str) -> bool:
+    match = find_client(target)
     if not match:
         return False
-
     addr = match["address"]
-    # Try Lua hyprctl dispatcher (`hl.dsp.focus`) first, fallback to standard dispatch
     r = run(["hyprctl", "dispatch", f'hl.dsp.focus({{ window = "address:{addr}" }})'])
     if r.returncode != 0:
         r = run(["hyprctl", "dispatch", "focuswindow", f"address:{addr}"])
     return r.returncode == 0
+
+
+def ocr_find_matches(query: str, window_filter: str | None = None, lang: str = "eng+vie") -> list[dict]:
+    """Capture screen (or cropped window) and return pixel centers of matching phrases."""
+    ox, oy = 0, 0
+    region_arg = None
+    if window_filter:
+        c = find_client(window_filter)
+        if c and c.get("at") and c.get("size"):
+            ox, oy = int(c["at"][0]), int(c["at"][1])
+            w, h = int(c["size"][0]), int(c["size"][1])
+            if w > 20 and h > 20:
+                region_arg = f"{ox},{oy} {w}x{h}"
+
+    tmp = f"/tmp/ai_find_{os.getpid()}.png"
+    gcmd = ["grim"]
+    if region_arg:
+        gcmd.extend(["-g", region_arg])
+    gcmd.append(tmp)
+    if run(gcmd).returncode != 0:
+        return []
+
+    langs = run(["tesseract", "--list-langs"]).stdout
+    use_lang = lang
+    if "vie" not in langs and "eng" in langs:
+        use_lang = "eng"
+    elif "eng" not in langs:
+        use_lang = "osd"
+
+    tsv = run(["tesseract", tmp, "stdout", "-l", use_lang, "--psm", "11", "tsv"]).stdout
+    try:
+        os.remove(tmp)
+    except Exception:
+        pass
+
+    words = []
+    lines_map = {}
+    for row in tsv.splitlines()[1:]:
+        cols = row.split("\t")
+        if len(cols) != 12:
+            continue
+        txt = cols[11].strip()
+        try:
+            conf = float(cols[10])
+            left, top, width, height = int(cols[6]), int(cols[7]), int(cols[8]), int(cols[9])
+        except Exception:
+            continue
+        if not txt or conf < 25 or width <= 0 or height <= 0:
+            continue
+        cx = ox + left + width // 2
+        cy = oy + top + height // 2
+        item = {"text": txt, "x": cx, "y": cy, "left": ox + left, "right": ox + left + width, "top": oy + top, "bottom": oy + top + height}
+        words.append(item)
+        line_key = (cols[1], cols[2], cols[3], cols[4])
+        lines_map.setdefault(line_key, []).append(item)
+
+    qlow = query.lower().strip()
+    hits = []
+    # 1. Check multi-word line phrases first
+    for _, wlist in lines_map.items():
+        wlist.sort(key=lambda d: d["left"])
+        joined = " ".join(w["text"] for w in wlist)
+        if qlow in joined.lower():
+            matched = [w for w in wlist if any(part in w["text"].lower() for part in qlow.split())] or wlist
+            avg_x = sum(w["x"] for w in matched) // len(matched)
+            avg_y = sum(w["y"] for w in matched) // len(matched)
+            hits.append({"text": joined, "x": avg_x, "y": avg_y, "score": 2})
+
+    # 2. Check individual words if phrase didn't hit
+    if not hits:
+        for w in words:
+            if qlow in w["text"].lower():
+                hits.append({"text": w["text"], "x": w["x"], "y": w["y"], "score": 1})
+
+    hits.sort(key=lambda d: (-d["score"], d["y"], d["x"]))
+    return hits
 
 
 def cmd_screen(args):
@@ -221,7 +306,7 @@ def cmd_screen(args):
         draw_grid(out)
     w, h, scale = get_monitor_info()
     cx, cy = get_cursor_pos()
-    notify_hud(cx if cx >= 0 else w // 2, cy if cy >= 0 else h // 2, "scan", "Quan sát màn hình", False)
+    notify_hud(cx if cx >= 0 else w // 2, cy if cy >= 0 else h // 2, "scan", "Quan sát màn hình", False, args.agent)
     print(json.dumps({
         "ok": True,
         "path": out,
@@ -254,16 +339,17 @@ def cmd_windows(args):
 
 
 def cmd_focus(args):
-    ok = hypr_focus(args.target)
-    if ok:
-        res = run(["hyprctl", "activewindow", "-j"])
-        try:
-            aw = json.loads(res.stdout)
-            ax = int(aw["at"][0] + aw["size"][0] / 2)
-            ay = int(aw["at"][1] + aw["size"][1] / 2)
-            notify_hud(ax, ay, "focus", f"Focus {args.target}", False)
-        except Exception:
-            pass
+    with pointer_lock():
+        ok = hypr_focus(args.target)
+        if ok:
+            res = run(["hyprctl", "activewindow", "-j"])
+            try:
+                aw = json.loads(res.stdout)
+                ax = int(aw["at"][0] + aw["size"][0] / 2)
+                ay = int(aw["at"][1] + aw["size"][1] / 2)
+                notify_hud(ax, ay, "focus", f"Focus {args.target}", False, args.agent)
+            except Exception:
+                pass
     print(json.dumps({"ok": ok, "target": args.target}))
     if not ok:
         sys.exit(1)
@@ -273,7 +359,7 @@ def cmd_launch(args):
     cmd = args.cmd
     w, h, _ = get_monitor_info()
     app_name = Path(cmd[0]).name if cmd else "app"
-    notify_hud(w // 2, h // 2, "launch", f"Mở {app_name}", False)
+    notify_hud(w // 2, h // 2, "launch", f"Mở {app_name}", False, args.agent)
     subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
@@ -284,59 +370,88 @@ def cmd_launch(args):
 
 
 def cmd_move(args):
-    ax, ay = calibrated_move(args.x, args.y, f"Di chuyển ({args.x}, {args.y})")
+    with pointer_lock():
+        ax, ay = calibrated_move(args.x, args.y, f"Di chuyển ({args.x}, {args.y})", args.agent)
     print(json.dumps({"ok": True, "target": [args.x, args.y], "actual": [ax, ay]}))
 
 
 def cmd_click(args):
     lbl = "Double Click" if args.double else ("Right Click" if args.button == "right" else "Click")
-    ax, ay = calibrated_move(args.x, args.y, lbl)
-    notify_hud(ax if ax >= 0 else args.x, ay if ay >= 0 else args.y, "click", lbl, True)
-    code = BUTTON_CODES[args.button]
-    if args.double:
-        run(["ydotool", "click", "--repeat", "2", "--next-delay", "60", code])
-    else:
-        run(["ydotool", "click", code])
+    with pointer_lock():
+        ax, ay = calibrated_move(args.x, args.y, lbl, args.agent)
+        notify_hud(ax if ax >= 0 else args.x, ay if ay >= 0 else args.y, "click", lbl, True, args.agent)
+        code = BUTTON_CODES[args.button]
+        if args.double:
+            run(["ydotool", "click", "--repeat", "2", "--next-delay", "60", code])
+        else:
+            run(["ydotool", "click", code])
     print(json.dumps({"ok": True, "button": args.button, "double": args.double, "at": [ax, ay]}))
 
 
 def cmd_scroll(args):
-    if args.x is not None and args.y is not None:
-        calibrated_move(args.x, args.y, "Cuộn trang")
-    else:
-        cx, cy = get_cursor_pos()
-        notify_hud(cx, cy, "scroll", "Cuộn trang", False)
-    run(["ydotool", "mousemove", "-w", "-x", "0", "-y", str(args.delta)])
+    with pointer_lock():
+        if args.x is not None and args.y is not None:
+            calibrated_move(args.x, args.y, "Cuộn trang", args.agent)
+        else:
+            cx, cy = get_cursor_pos()
+            notify_hud(cx, cy, "scroll", "Cuộn trang", False, args.agent)
+        run(["ydotool", "mousemove", "-w", "-x", "0", "-y", str(args.delta)])
     print(json.dumps({"ok": True, "delta": args.delta}))
 
 
 def cmd_type(args):
-    ensure_ydotool()
-    cx, cy = get_cursor_pos()
-    preview = args.text[:24] + ("..." if len(args.text) > 24 else "")
-    notify_hud(cx, cy, "type", f"Nhập: {preview}", False)
-    text = args.text
-    is_ascii = all(32 <= ord(ch) <= 126 for ch in text)
-    if is_ascii and len(text) <= 80 and not args.paste:
-        run(["ydotool", "type", "--key-delay", "8", text])
-        method = "ydotool"
-    else:
-        # Reliable Unicode/Vietnamese input via clipboard paste
-        subprocess.run(["wl-copy", "--", text], check=True)
-        time.sleep(0.08)
-        press_combo("ctrl+v")
-        method = "clipboard_paste"
-    if args.enter:
-        time.sleep(0.05)
-        press_combo("enter")
+    with pointer_lock():
+        ensure_ydotool()
+        cx, cy = get_cursor_pos()
+        preview = args.text[:24] + ("..." if len(args.text) > 24 else "")
+        notify_hud(cx, cy, "type", f"Nhập: {preview}", False, args.agent)
+        text = args.text
+        is_ascii = all(32 <= ord(ch) <= 126 for ch in text)
+        if is_ascii and len(text) <= 80 and not args.paste:
+            run(["ydotool", "type", "--key-delay", "8", text])
+            method = "ydotool"
+        else:
+            subprocess.run(["wl-copy", "--", text], check=True)
+            time.sleep(0.08)
+            press_combo("ctrl+v")
+            method = "clipboard_paste"
+        if args.enter:
+            time.sleep(0.05)
+            press_combo("enter")
     print(json.dumps({"ok": True, "method": method, "length": len(text)}))
 
 
 def cmd_key(args):
-    cx, cy = get_cursor_pos()
-    notify_hud(cx, cy, "key", f"Phím: {args.combo}", False)
-    press_combo(args.combo)
+    with pointer_lock():
+        cx, cy = get_cursor_pos()
+        notify_hud(cx, cy, "key", f"Phím: {args.combo}", False, args.agent)
+        press_combo(args.combo)
     print(json.dumps({"ok": True, "combo": args.combo}))
+
+
+def cmd_find(args):
+    hits = ocr_find_matches(args.query, args.window, args.lang)
+    print(json.dumps({"found": len(hits) > 0, "count": len(hits), "matches": hits[:10]}, ensure_ascii=False))
+    if not hits:
+        sys.exit(1)
+
+
+def cmd_click_text(args):
+    hits = ocr_find_matches(args.query, args.window, args.lang)
+    if not hits:
+        print(json.dumps({"ok": False, "error": f"Text '{args.query}' not found on screen"}))
+        sys.exit(1)
+    idx = min(max(0, args.index), len(hits) - 1)
+    target = hits[idx]
+    with pointer_lock():
+        if args.window:
+            hypr_focus(args.window)
+            time.sleep(0.08)
+        lbl = f"Click '{args.query[:20]}'"
+        ax, ay = calibrated_move(target["x"], target["y"], lbl, args.agent)
+        notify_hud(ax if ax >= 0 else target["x"], ay if ay >= 0 else target["y"], "click", lbl, True, args.agent)
+        run(["ydotool", "click", BUTTON_CODES[args.button]])
+    print(json.dumps({"ok": True, "matched": target["text"], "at": [ax, ay]}))
 
 
 def cmd_ocr(args):
@@ -346,35 +461,43 @@ def cmd_ocr(args):
         cmd.extend(["-g", args.region])
     cmd.append(tmp)
     run(cmd)
-    lang = args.lang or "eng"
-    res = run(["tesseract", tmp, "stdout", "-l", lang, "--psm", "6"])
+    res = run(["tesseract", tmp, "stdout", "-l", args.lang, "--psm", "6"])
     print(res.stdout.strip())
 
 
 def main():
     p = argparse.ArgumentParser(description="Caelestia Desktop Control Helper")
+    p.add_argument("--agent", default="Meow AI", help="Named visual cursor agent label")
     sub = p.add_subparsers(dest="sub", required=True)
+
+    def add_agent_arg(sp_obj):
+        sp_obj.add_argument("--agent", default=None, help="Override visual cursor agent label")
 
     sp = sub.add_parser("screen", help="Capture screen (optionally with pixel coordinate grid)")
     sp.add_argument("--grid", action="store_true")
     sp.add_argument("--region", help="Optional region 'x,y wxh'")
     sp.add_argument("--out", default="/tmp/ai_screen.png")
+    add_agent_arg(sp)
     sp.set_defaults(func=cmd_screen)
 
     wp = sub.add_parser("windows", help="List Hyprland windows & geometry")
+    add_agent_arg(wp)
     wp.set_defaults(func=cmd_windows)
 
     fp = sub.add_parser("focus", help="Focus window by title substring, class, or address")
     fp.add_argument("target")
+    add_agent_arg(fp)
     fp.set_defaults(func=cmd_focus)
 
     lp = sub.add_parser("launch", help="Launch GUI application in background")
     lp.add_argument("cmd", nargs=argparse.REMAINDER)
+    add_agent_arg(lp)
     lp.set_defaults(func=cmd_launch)
 
     mp = sub.add_parser("move", help="Move cursor accurately to screen (x, y)")
     mp.add_argument("x", type=int)
     mp.add_argument("y", type=int)
+    add_agent_arg(mp)
     mp.set_defaults(func=cmd_move)
 
     cp = sub.add_parser("click", help="Click accurately at screen (x, y)")
@@ -382,30 +505,53 @@ def main():
     cp.add_argument("y", type=int)
     cp.add_argument("--button", choices=["left", "right", "middle"], default="left")
     cp.add_argument("--double", action="store_true")
+    add_agent_arg(cp)
     cp.set_defaults(func=cmd_click)
 
     scp = sub.add_parser("scroll", help="Scroll mouse wheel")
     scp.add_argument("delta", type=int, help="Negative=down, Positive=up")
     scp.add_argument("--x", type=int)
     scp.add_argument("--y", type=int)
+    add_agent_arg(scp)
     scp.set_defaults(func=cmd_scroll)
 
     tp = sub.add_parser("type", help="Type text (supports Vietnamese/Unicode automatically via Ctrl+V)")
     tp.add_argument("text")
     tp.add_argument("--enter", action="store_true")
     tp.add_argument("--paste", action="store_true")
+    add_agent_arg(tp)
     tp.set_defaults(func=cmd_type)
 
     kp = sub.add_parser("key", help="Press key combo e.g. ctrl+l, ctrl+t, alt+tab, enter")
     kp.add_argument("combo")
+    add_agent_arg(kp)
     kp.set_defaults(func=cmd_key)
+
+    fnd = sub.add_parser("find", help="Find on-screen UI text and return exact (x, y) pixel centers")
+    fnd.add_argument("query")
+    fnd.add_argument("--window", default=None, help="Limit OCR to window class/title substring")
+    fnd.add_argument("--lang", default="eng+vie")
+    add_agent_arg(fnd)
+    fnd.set_defaults(func=cmd_find)
+
+    ct = sub.add_parser("click-text", help="Locate text on screen and immediately glide cursor + click it")
+    ct.add_argument("query")
+    ct.add_argument("--window", default=None, help="Limit OCR to window class/title substring")
+    ct.add_argument("--lang", default="eng+vie")
+    ct.add_argument("--index", type=int, default=0)
+    ct.add_argument("--button", choices=["left", "right", "middle"], default="left")
+    add_agent_arg(ct)
+    ct.set_defaults(func=cmd_click_text)
 
     op = sub.add_parser("ocr", help="Run tesseract OCR on current screen or region")
     op.add_argument("--region")
-    op.add_argument("--lang", default="eng")
+    op.add_argument("--lang", default="eng+vie")
+    add_agent_arg(op)
     op.set_defaults(func=cmd_ocr)
 
     args = p.parse_args()
+    if getattr(args, "agent", None) is None:
+        args.agent = "Meow AI"
     args.func(args)
 
 
