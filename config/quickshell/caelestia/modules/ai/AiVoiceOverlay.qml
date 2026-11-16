@@ -50,13 +50,13 @@ Variants {
 
         readonly property string titleText: {
             if (st === "listening")
-                return AiAutomationService.trChat("Mi Mi đã thức — Đang nghe lệnh...", "Mi Mi Awake — Listening...");
+                return AiAutomationService.trChat("Đang nghe lệnh giọng nói...", "Listening for Command...");
             if (st === "thinking")
                 return AiAutomationService.trChat("Đang nhận diện giọng nói...", "Understanding Command...");
             if (st === "speaking")
-                return AiAutomationService.trChat("Mi Mi đang trả lời...", "Mi Mi Speaking...");
+                return AiAutomationService.trChat("Meow AI đang đọc phản hồi...", "Meow AI Speaking...");
             if (st === "error")
-                return AiAutomationService.trChat("Chưa nghe rõ — Hãy gọi lại 'Mi Mi'", "Didn't catch that — Say 'Mi Mi'");
+                return AiAutomationService.trChat("Chưa nghe rõ — Vui lòng thử lại", "Didn't catch that — Try Again");
             return "";
         }
 

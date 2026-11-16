@@ -38,6 +38,13 @@ SEED_RECIPES = [
         "success_count": 2,
         "last_used": 0,
     },
+    {
+        "id": "curated_depth_and_lang",
+        "topic": "Rich Word curation & language accuracy",
+        "lesson": "Avoid thin JS/SPA stub pages (<1200 chars); auto-enrich from hit #2, fetch keyword-verified artwork (>=360px), and translate Word docs to Vietnamese when prompt is Vietnamese even if chatLanguage=auto.",
+        "success_count": 2,
+        "last_used": 0,
+    },
 ]
 
 

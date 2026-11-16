@@ -214,6 +214,7 @@ class Orchestrator:
         self.chat_language = str(config.get("chatLanguage", "vi") or "vi").lower()
         self.voice_mode = bool(config.get("voiceMode", False))
         self.cwd = config.get("cwd") or os.path.expanduser("~")
+        self._active_task_text = ""
 
     def _apply_quick_system_actions(self, spec: dict) -> list[str]:
         """Apply instant (<0.15s) OS controls extracted from intent JSON without LLM tool loops."""
@@ -272,13 +273,23 @@ class Orchestrator:
             threading.Thread(target=_reflect, daemon=True).start()
 
     def is_vi(self) -> bool:
-        return self.chat_language == "vi"
+        if self.chat_language == "vi":
+            return True
+        if self.chat_language == "auto" and self._active_task_text:
+            return bool(
+                re.search(
+                    r"[àáảãạăằắẳẵặâầấẩẫậđèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵ]|"
+                    r"\b(mở|tìm|bật|tắt|chuyển|tạo|kiểm tra|phát|nhạc|bài viết|sang|vào|của|cho|tôi|thời tiết|định dạng)\b",
+                    self._active_task_text.lower(),
+                )
+            )
+        return False
 
     def language_instruction(self) -> str:
-        if self.chat_language == "vi":
+        if self.is_vi():
             return (
-                "LANGUAGE: Write ALL user-facing text in natural, concise Vietnamese (Tiếng Việt). "
-                "Never expose internal labels ('Agent A/B/C')."
+                "LANGUAGE: Write ALL user-facing text in natural, well-structured Vietnamese (Tiếng Việt). "
+                "Translate foreign headings/tables cleanly to Vietnamese while keeping proper names intact. Never expose internal labels ('Agent A/B/C')."
             )
         elif self.chat_language == "en":
             return (
@@ -1356,10 +1367,10 @@ class Orchestrator:
             "Normalize any spelling typos (e.g. 'Onui'->'One UI', 'saung'->'sau đó', 'Hoyovers'->'HoYoverse') into clean search queries:\n"
             f"USER REQUEST: {clean_task}\n\n"
             "Return JSON schema:\n"
-            '{"article_query":"concise search words for web","doc_filename":"Clean_Ascii_Name.docx","doc_title":"Clean Document Title",'
+            '{"article_query":"concise English/topic news search words for rich articles","image_query":"specific game/entity name for accurate artwork image search","doc_filename":"Clean_Ascii_Name.docx","doc_title":"Clean Document Title",'
             '"curation_focus":"what key facts/sections the user wants","yt_query":"song/video query if user asked to play YouTube else empty string",'
             '"want_image":true,"night_light":null,"mode_id":"","brightness_pct":null}\n'
-            "Rules: set night_light to true/false only if user explicitly asked for Night Light; set mode_id only if user asked to switch system mode (standard/gaming/work/coding/cinema/sleep)."
+            "Rules: prefer rich news queries (e.g. 'HoYoverse upcoming games announcement features' rather than tracker sites); set night_light to true/false only if user explicitly asked for Night Light; set mode_id only if user asked to switch system mode (standard/gaming/work/coding/cinema/sleep)."
         )
         ok_p, raw_p, _, eff_p, _ = self.run_agy("router", "Intent Parse", parse_prompt, fast_m)
         if not ok_p:
@@ -1368,6 +1379,7 @@ class Orchestrator:
         article_query = str(spec.get("article_query") or "").strip()
         if not article_query:
             return None
+        image_query = str(spec.get("image_query") or article_query).strip()
         doc_filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(spec.get("doc_filename") or "Article_Summary.docx")).strip("_") or "Article_Summary.docx"
         if not doc_filename.lower().endswith(".docx"):
             doc_filename += ".docx"
@@ -1382,7 +1394,7 @@ class Orchestrator:
             pass
 
         self.logger.write(
-            f"Curated Web->Office pipeline -> query={article_query!r}, doc={doc_filename}, yt={yt_query!r}, img={want_image}, nl={spec.get('night_light')}, barrier={final_barrier}",
+            f"Curated Web->Office pipeline -> query={article_query!r}, img_q={image_query!r}, doc={doc_filename}, yt={yt_query!r}, img={want_image}, nl={spec.get('night_light')}, barrier={final_barrier}",
             "\033[1;36m",
         )
         emit(
@@ -1398,18 +1410,18 @@ class Orchestrator:
             ),
         )
 
-        # Phase 2: Human-like visible web-copy directly via desktop_ctl (0 LLM step latency!)
+        # Phase 2: Human-like visible web-copy directly via desktop_ctl (auto-enriches from 2nd article if #1 is thin)
         emit("phase", phase="working", progress=35, detail="Đang mở Firefox tìm, cuộn đọc & copy bài viết..." if self.is_vi() else "Browsing & scrolling article in Firefox...")
         emit("engine_start", role="executor", label="Browser", model="local-visual")
         emit("engine_step", worker="Browser", step=1, detail=f"Mở Firefox tìm & cuộn đọc: {article_query}")
         wc_cmd = ["caelestia-desktop", "web-copy", article_query, "--scrolls", "2", "--agent", "Browser"]
         if want_image:
-            wc_cmd += ["--save-image", str(img_out_path)]
+            wc_cmd += ["--save-image", str(img_out_path), "--image-query", image_query]
         wc_res = subprocess.run(
             wc_cmd,
             capture_output=True,
             text=True,
-            timeout=40,
+            timeout=55,
         )
         if wc_res.returncode == 2:
             emit("task_error", message="Trang tìm kiếm yêu cầu xác minh CAPTCHA/người thật — AI đã dừng theo quy tắc an toàn." if self.is_vi() else "Blocked by CAPTCHA verification.")
@@ -1421,32 +1433,38 @@ class Orchestrator:
         wc_info = extract_json_block(wc_res.stdout) or {}
         raw_path = Path(wc_info.get("raw_file") or "/tmp/ai_web_copied.txt")
         raw_text = raw_path.read_text(encoding="utf-8") if raw_path.exists() else subprocess.run(["wl-paste", "--no-newline"], capture_output=True, text=True).stdout
-        raw_trimmed = raw_text[:9000]
+        raw_trimmed = raw_text[:11000]
 
-        # Phase 3: Parallel AI Content Curation (no GUI!) + Visual YouTube yt-play (Firefox GUI!)
+        # Phase 3: Parallel AI Content Curation (uses full worker_model for rich non-superficial quality!) + YouTube yt-play
         emit("phase", phase="working", progress=62, detail="Đang chọn lọc & biên tập nội dung đẹp cho Word..." if self.is_vi() else "Curating clean article structure...")
         curated_path = Path("/tmp/ai_curated_doc.md")
+        editor_model = self.worker_model or fast_m
 
         def run_curation() -> tuple[bool, str]:
-            emit("engine_start", role="router", label="Editor AI", model=fast_m)
-            emit("engine_step", worker="Editor AI", step=1, detail="Lọc bỏ rác trang web & biên tập cấu trúc Word")
+            emit("engine_start", role="router", label="Editor AI", model=editor_model)
+            emit("engine_step", worker="Editor AI", step=1, detail="Lọc bỏ rác trang web & biên tập chi tiết cấu trúc Word")
+            lang_force = (
+                "CRITICAL LANGUAGE RULE: Write the ENTIRE Word document (Main Title, Section Headings, Markdown Table headers & cells, descriptions, notes) in fluent VIETNAMESE (Tiếng Việt), keeping only proper game/studio names in English!"
+                if self.is_vi()
+                else self.language_instruction()
+            )
             curate_prompt = (
                 "CRITICAL: Do NOT call ANY tools (no run_command, no write_file, no read_file). Reply IMMEDIATELY with ONLY clean Markdown.\n"
-                "You are an editor turning raw webpage clipboard text into a clean, well-structured Word document.\n"
+                "You are a senior editor creating a rich, accurate, well-structured Word document from browsed webpage text.\n"
+                f"ORIGINAL USER REQUEST: {clean_task}\n"
                 f"TASK GOAL / FOCUS: {curation_focus}\n"
-                f"ARTICLE TITLE HINT: {wc_info.get('page_title') or doc_title}\n"
-                f"{self.language_instruction()}\n"
-                "STRICT RULES:\n"
+                f"SOURCE PAGE HINT: {wc_info.get('page_title') or doc_title}\n"
+                f"{lang_force}\n"
+                "STRICT QUALITY RULES (DO NOT BE SUPERFICIAL):\n"
                 "- Remove ALL leftover navigation menus, ads, cookie notices, 'Skip to content', login buttons, unrelated links.\n"
-                "- Select ONLY accurate, substantive facts from the source text below.\n"
-                "- Format cleanly for Word typography using `# Main Title`, `## Section Heading`, and concise `- **Key point:** details` bullets + `## Nguồn tham khảo` at the end.\n"
-                "- When comparing items, release dates, platforms, or specs, include a concise Markdown comparison table (`| Col 1 | Col 2 |`) so it renders as a formatted Word table.\n\n"
+                "- Extract ALL relevant titles, dates, genres, platforms, gameplay features, and studio context present in the source text.\n"
+                "- Format cleanly for Word typography using `# Main Title`, `## Section Heading`, `### Subheading`, and concise `- **Point:** explanation` bullets + `## Nguồn tham khảo` at the end.\n"
+                "- Include a clean Markdown comparison table (`| Col 1 | Col 2 |`) summarizing items/games/dates/platforms so it renders as a formatted Word table.\n\n"
                 f"RAW COPIED WEBPAGE TEXT:\n{raw_trimmed}"
             )
-            ok_c, curated_md, err_c, _, _ = self.run_agy("router", "Editor AI", curate_prompt, fast_m)
-            if not ok_c or len((curated_md or "").strip()) < 120:
+            ok_c, curated_md, err_c, _, _ = self.run_agy("router", "Editor AI", curate_prompt, editor_model)
+            if not ok_c or len((curated_md or "").strip()) < 160:
                 return False, err_c or "Curation returned empty text"
-            # Strip accidental markdown code fences if model wrapped output
             cleaned_md = re.sub(r"^```(?:markdown|md)?\s*|\s*```$", "", curated_md.strip(), flags=re.IGNORECASE)
             curated_path.write_text(cleaned_md, encoding="utf-8")
             return True, cleaned_md
@@ -1508,9 +1526,9 @@ class Orchestrator:
             return "__ABORTED__"
 
         summary_lines = [
-            f"- **Bài viết nguồn (đọc trực quan trên Firefox):** {wc_info.get('page_title') or wc_info.get('matched_link')}",
+            f"- **Bài viết nguồn (đọc trực quan trên Firefox):** {wc_info.get('page_title') or wc_info.get('matched_link')} ({len(raw_text)} ký tự)",
             f"- **Biên tập & định dạng Word:** Đã lọc bỏ rác web, định dạng tiêu đề/đề mục/bảng biểu sạch đẹp tại [{doc_filename}](file://{docx_out})"
-            + (" kèm ảnh minh họa nhúng trong tài liệu" if has_img else "")
+            + (" **kèm ảnh minh họa chính xác nhúng trong Word**" if has_img else " *(cảnh báo: chưa lấy được ảnh phù hợp từ nguồn web)*")
             + f" (trình soạn thảo đã mở: `{op_info.get('app') or 'none'}`).",
         ]
         if yt_query:
@@ -1558,6 +1576,7 @@ class Orchestrator:
 
     def run_task(self, user_task: str):
         task_start_ts = time.time()
+        self._active_task_text = user_task
         self.logger.write(f"USER REQUEST: {user_task}", "\033[1;34m")
 
         # Tier 0: Zero-LLM Instant Local Execution (<100ms, 0 tokens)

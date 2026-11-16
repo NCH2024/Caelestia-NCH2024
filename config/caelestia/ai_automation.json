@@ -22,7 +22,6 @@
   "showGhostCursor": true,
   "preferVisualCursor": true,
   "logRetentionDays": 30,
-  "voiceWakeEnabled": true,
-  "voiceReplyEnabled": true,
+  "voiceReplyEnabled": false,
   "voiceModel": "tiny"
 }

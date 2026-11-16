@@ -97,7 +97,7 @@ def main():
 - **Nexus Settings Pages:** `caelestia shell nexus openPage <0..15>` (`0`: AI Automation, `1`: Modes, `2`: Device Care, `6`: Equalizer, `8`: Updates, `14`: Shortcuts)
 - **Night Light & Display:** `caelestia shell modes setNightLight <true|false> <temp>` (instant `<0.1s` IPC, e.g. `caelestia shell modes setNightLight true 3500`), `brightnessctl set 100%`
 - **Media / Audio / Lock:** `pactl list sink-inputs` (Firefox YouTube playback -> check `Corked: no`), `playerctl status` (native players), `wpctl set-volume @DEFAULT_AUDIO_SINK@ 80%`, `caelestia shell lock lock`
-- **Voice Assistant ("Mi Mi / Hey Mi Mi / Hello Mi Mi"):** `caelestia-voice` (`train`, `daemon`, `listen-once`, `speak`, `status`, `clear-profile`)
+- **Voice Input / Speech (Push-to-Talk):** `caelestia-voice` (`listen-once`, `speak`)
 - **Telemetry / CPU:** `caelestia-telemetry` (safe thermal/fan/GPU readout), `scxctl get`
 
 ## 3. Real-Time Multi-Cursor Computer-Use Protocol (`caelestia-desktop`)

@@ -886,6 +886,115 @@ def cmd_write_docx(args):
     print(json.dumps({"ok": True, "path": str(out_path), "bytes": size, "office_app": office_bin}, ensure_ascii=False))
 
 
+def _extract_article_image_from_html(page_url: str, html_txt: str, out_img: Path, query_hint: str = "") -> str:
+    """Extract verified, relevant hero artwork/photo (>=360x200) from article HTML, rejecting tiny icons/logos."""
+    import re
+    import urllib.request
+    from urllib.parse import urljoin
+
+    bad_url = ("logo", "avatar", "icon", "favicon", "badge", "spinner", ".svg", "placeholder", "emoji", "1x1", "blank", "ads/", "doubleclick")
+    candidates_img = []
+    for pat in (
+        r'<meta[^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\']',
+        r'<img[^>]+(?:src|data-src)=["\']([^"\']+)["\']',
+    ):
+        for found in re.findall(pat, html_txt, re.I):
+            low_f = found.lower()
+            if found and not found.startswith("data:") and not any(b in low_f for b in bad_url):
+                candidates_img.append(urljoin(page_url, found.strip()))
+
+    for img_url in candidates_img[:10]:
+        try:
+            raw_img = urllib.request.urlopen(urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"}), timeout=4.5).read()
+            if len(raw_img) >= 14000:
+                out_img.parent.mkdir(parents=True, exist_ok=True)
+                out_img.write_bytes(raw_img)
+                with Image.open(out_img) as im:
+                    if im.width >= 360 and im.height >= 200:
+                        im.convert("RGB").save(out_img, "JPEG", quality=88)
+                        return str(out_img)
+                out_img.unlink(missing_ok=True)
+        except Exception:
+            continue
+    return ""
+
+
+def _fetch_verified_ddg_image(query: str, out_img: Path) -> str:
+    """Fallback: fetch accurate landscape artwork matching query keywords via DuckDuckGo i.js."""
+    import re
+    import urllib.parse
+    import urllib.request
+
+    q_words = [w.lower() for w in re.findall(r"[A-Za-z0-9]{3,}", query) if w.lower() not in {"game", "new", "upcoming", "official", "image", "artwork", "the", "and"}]
+    bad_url = ("logo.wine", "lookaside.fbsbx", "favicon", "sprite", "svg")
+    try:
+        search_u = "https://duckduckgo.com/?q=" + urllib.parse.quote_plus(query) + "&iax=images&ia=images"
+        html_txt = urllib.request.urlopen(urllib.request.Request(search_u, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Firefox/131.0"}), timeout=5.0).read().decode("utf-8", errors="ignore")
+        m = re.search(r'vqd=["\']?([^"\'&]+)', html_txt)
+        if not m:
+            return ""
+        vqd = m.group(1)
+        api = f"https://duckduckgo.com/i.js?l=us-en&o=json&q={urllib.parse.quote_plus(query)}&vqd={vqd}&f=,,,&p=1"
+        raw = urllib.request.urlopen(urllib.request.Request(api, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Firefox/131.0", "Referer": "https://duckduckgo.com/"}), timeout=5.0).read().decode("utf-8", errors="ignore")
+        results = json.loads(raw).get("results", [])
+        for r in results[:12]:
+            title_l = str(r.get("title") or "").lower()
+            img_u = str(r.get("image") or "")
+            thumb_u = str(r.get("thumbnail") or "")
+            if int(r.get("width") or 0) < 420 or int(r.get("height") or 0) < 220:
+                continue
+            if any(b in img_u.lower() for b in bad_url):
+                continue
+            # Ensure image title genuinely matches at least 1 core entity word from query
+            if q_words and not any(kw in title_l or kw in img_u.lower() for kw in q_words):
+                continue
+            for try_u in (img_u, thumb_u):
+                if not try_u:
+                    continue
+                try:
+                    raw_img = urllib.request.urlopen(urllib.request.Request(try_u, headers={"User-Agent": "Mozilla/5.0"}), timeout=4.5).read()
+                    if len(raw_img) >= 12000:
+                        out_img.parent.mkdir(parents=True, exist_ok=True)
+                        out_img.write_bytes(raw_img)
+                        with Image.open(out_img) as im:
+                            if im.width >= 320 and im.height >= 180:
+                                im.convert("RGB").save(out_img, "JPEG", quality=88)
+                                return str(out_img)
+                        out_img.unlink(missing_ok=True)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return ""
+
+
+def _clean_copied_article(clip: str) -> str:
+    noise_pats = (
+        "skip to content", "skip to main", "cookie", "accept all", "privacy policy",
+        "terms of service", "sign in", "log in", "subscribe", "global navigation",
+        "choose your location", "close location", "read more", "share this", "alt=\"\"",
+        "advertisement", "all rights reserved",
+    )
+    lines = []
+    seen = set()
+    for ln in clip.splitlines():
+        st = ln.strip()
+        low_l = st.lower()
+        if len(st) < 25 and not st.endswith(":"):
+            continue
+        if any(np in low_l for np in noise_pats):
+            continue
+        if st in seen:
+            continue
+        seen.add(st)
+        lines.append(st)
+    clean_clip = "\n".join(lines[:140])
+    if not clean_clip.strip():
+        clean_clip = "\n".join(ln.strip() for ln in clip.splitlines() if len(ln.strip()) >= 8)[:6000]
+    return clean_clip
+
+
 def cmd_web_copy(args):
     """Browse like a human: launch Firefox search, click a real article, scroll down visibly, and copy clean text via Ctrl+A/Ctrl+C."""
     query = args.query.strip()
@@ -921,15 +1030,18 @@ def cmd_web_copy(args):
                 print(json.dumps({"ok": False, "blocked": "captcha", "error": "Anti-bot / CAPTCHA verification detected"}))
                 sys.exit(2)
             ui_junk = ("generate answer", "duckassist", "news for", "images for", "videos for", "people also", "more results", "search instead", "feedback")
+            spa_stubs = ("gamedropradar", "release-date tracker", "countdown")
             for cand in candidates:
                 raw_hits = _ocr_scan_once(cand, "firefox", "auto", min_y=230)
                 non_ui = [
                     item for item in raw_hits
                     if len(item["text"].strip()) >= 18 and not any(j in item["text"].lower() for j in ui_junk)
                 ]
-                # Prefer article result headlines lower down (below instant answer box) when available
-                below_ia = [item for item in non_ui if item["y"] >= 310]
-                hits = below_ia or non_ui or raw_hits
+                # Prefer rich article headlines lower down (skip DuckAssist summary + thin SPA stub sites)
+                rich = [item for item in non_ui if not any(s in item["text"].lower() for s in spa_stubs)]
+                pool = rich or non_ui or raw_hits
+                below_ia = [item for item in pool if item["y"] >= 310]
+                hits = below_ia or pool
                 if hits:
                     break
             if not hits:
@@ -957,100 +1069,79 @@ def cmd_web_copy(args):
             notify_hud(ax, ay, "click", "Click bài viết", True, args.agent)
             run(["ydotool", "click", BUTTON_CODES["left"]])
         time.sleep(2.2)
-    with pointer_lock():
-        hypr_focus("firefox")
-        time.sleep(0.15)
-        fc = find_client("firefox")
-        cx = int(fc["at"][0] + fc["size"][0] / 2) if fc else w // 2
-        cy = int(fc["at"][1] + fc["size"][1] / 2) if fc else h // 2
-        calibrated_move(cx, cy, "Đọc & cuộn trang", args.agent)
-        # NOTE: Never press Ctrl+Alt+R (Hyprland global shortcut for `caelestia record` screen recording!)
-        for _ in range(max(1, args.scrolls)):
-            notify_hud(cx, cy, "scroll", "Cuộn trang đọc bài", False, args.agent)
-            run(["ydotool", "mousemove", "-w", "-x", "0", "-y", "-5"])
-            time.sleep(0.4)
 
-        notify_hud(cx, cy, "click", "Chọn nội dung (Ctrl+A)", True, args.agent)
-        run(["ydotool", "click", BUTTON_CODES["left"]])
-        time.sleep(0.08)
-        press_combo("ctrl+a")
-        time.sleep(0.15)
-        notify_hud(cx, cy, "key", "Sao chép (Ctrl+C)", False, args.agent)
-        press_combo("ctrl+c")
-        time.sleep(0.25)
-
-    clip = run(["wl-paste", "--no-newline"]).stdout
-    saved_img = ""
-    if getattr(args, "save_image", ""):
-        # Grab active page URL via address bar silently & fetch og:image / featured image
+    def _scroll_copy_and_grab_img() -> tuple[str, str, str]:
         with pointer_lock():
-            press_combo("ctrl+l")
+            hypr_focus("firefox")
+            time.sleep(0.15)
+            fc = find_client("firefox")
+            cx = int(fc["at"][0] + fc["size"][0] / 2) if fc else w // 2
+            cy = int(fc["at"][1] + fc["size"][1] / 2) if fc else h // 2
+            calibrated_move(cx, cy, "Đọc & cuộn trang", args.agent)
+            for _ in range(max(1, args.scrolls)):
+                notify_hud(cx, cy, "scroll", "Cuộn trang đọc bài", False, args.agent)
+                run(["ydotool", "mousemove", "-w", "-x", "0", "-y", "-5"])
+                time.sleep(0.35)
+            notify_hud(cx, cy, "click", "Chọn nội dung (Ctrl+A)", True, args.agent)
+            run(["ydotool", "click", BUTTON_CODES["left"]])
             time.sleep(0.08)
+            press_combo("ctrl+a")
+            time.sleep(0.15)
+            notify_hud(cx, cy, "key", "Sao chép (Ctrl+C)", False, args.agent)
             press_combo("ctrl+c")
+            time.sleep(0.22)
+        raw_c = run(["wl-paste", "--no-newline"]).stdout
+        img_f = ""
+        if getattr(args, "save_image", ""):
+            with pointer_lock():
+                press_combo("ctrl+l")
+                time.sleep(0.08)
+                press_combo("ctrl+c")
+                time.sleep(0.1)
+                press_combo("escape")
+            page_url = run(["wl-paste", "--no-newline"]).stdout.strip()
+            if page_url.startswith("http"):
+                try:
+                    import urllib.request
+                    req = urllib.request.Request(page_url, headers={"User-Agent": "Mozilla/5.0"})
+                    html_txt = urllib.request.urlopen(req, timeout=4.5).read().decode("utf-8", errors="ignore")
+                    img_f = _extract_article_image_from_html(page_url, html_txt, Path(args.save_image).expanduser(), query)
+                except Exception:
+                    img_f = ""
+        return raw_c, _clean_copied_article(raw_c), img_f
+
+    raw1, clean_clip, saved_img = _scroll_copy_and_grab_img()
+    first_title = _firefox_title()
+
+    # If article #1 is thin (<1200 chars) or yielded 0 valid images, go Back cleanly & enrich from article #2!
+    if (len(clean_clip) < 1200 or (getattr(args, "save_image", "") and not saved_img)) and len(hits) > 1 and hits[1]["text"] != clicked_title:
+        with pointer_lock():
+            hypr_focus("firefox")
             time.sleep(0.1)
-            press_combo("escape")
-        page_url = run(["wl-paste", "--no-newline"]).stdout.strip()
-        if page_url.startswith("http"):
-            try:
-                import re
-                import urllib.request
-                from urllib.parse import urljoin
-                req = urllib.request.Request(page_url, headers={"User-Agent": "Mozilla/5.0"})
-                html_txt = urllib.request.urlopen(req, timeout=4.5).read().decode("utf-8", errors="ignore")
-                candidates_img = []
-                for pat in (
-                    r'<meta[^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\'][^>]+content=["\']([^"\']+)["\']',
-                    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\']',
-                    r'<img[^>]+(?:src|data-src)=["\']([^"\']+)["\']',
-                ):
-                    for found in re.findall(pat, html_txt, re.I):
-                        if found and not found.startswith("data:") and ".svg" not in found.lower():
-                            candidates_img.append(urljoin(page_url, found.strip()))
-                for img_url in candidates_img[:8]:
-                    try:
-                        raw_img = urllib.request.urlopen(urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"}), timeout=4.0).read()
-                        if len(raw_img) >= 12000:
-                            out_img = Path(args.save_image).expanduser()
-                            out_img.parent.mkdir(parents=True, exist_ok=True)
-                            out_img.write_bytes(raw_img)
-                            with Image.open(out_img) as im:
-                                if im.width >= 200 and im.height >= 120:
-                                    im.convert("RGB").save(out_img, "JPEG", quality=86)
-                                    saved_img = str(out_img)
-                                    break
-                            out_img.unlink(missing_ok=True)
-                    except Exception:
-                        continue
-            except Exception:
-                saved_img = ""
-        wl_copy_safe(clip)
-    noise_pats = (
-        "skip to content", "skip to main", "cookie", "accept all", "privacy policy",
-        "terms of service", "sign in", "log in", "subscribe", "global navigation",
-        "choose your location", "close location", "read more", "share this", "alt=\"\"",
-        "advertisement", "all rights reserved",
-    )
-    lines = []
-    seen = set()
-    for ln in clip.splitlines():
-        st = ln.strip()
-        low_l = st.lower()
-        if len(st) < 25 and not st.endswith(":"):
-            # Drop short UI/nav button crumbs while keeping real short headings ending cleanly
-            continue
-        if any(np in low_l for np in noise_pats):
-            continue
-        if st in seen:
-            continue
-        seen.add(st)
-        lines.append(st)
-    clean_clip = "\n".join(lines[:140])
-    if not clean_clip.strip():
-        clean_clip = "\n".join(ln.strip() for ln in clip.splitlines() if len(ln.strip()) >= 8)[:6000]
+            press_combo("alt+Left")
+        time.sleep(1.3)
+        with pointer_lock():
+            hypr_focus("firefox")
+            t2 = hits[1]
+            ax2, ay2 = calibrated_move(t2["x"], t2["y"], "Đọc thêm bài #2", args.agent)
+            notify_hud(ax2, ay2, "click", "Mở bài viết #2", True, args.agent)
+            run(["ydotool", "click", BUTTON_CODES["left"]])
+        time.sleep(2.2)
+        _, clean_2, img_2 = _scroll_copy_and_grab_img()
+        if len(clean_2) >= 200:
+            clean_clip = f"{clean_clip}\n\n--- BÀI VIẾT BỔ SUNG ({_firefox_title()}) ---\n{clean_2}"
+        if img_2 and not saved_img:
+            saved_img = img_2
+
+    # If SPA / JS-rendered pages still gave no static og:image, fetch keyword-verified artwork via DDG Images
+    if getattr(args, "save_image", "") and not saved_img:
+        img_q = getattr(args, "image_query", "") or query
+        saved_img = _fetch_verified_ddg_image(img_q, Path(args.save_image).expanduser())
+
     if clean_clip:
         wl_copy_safe(clean_clip)
         Path("/tmp/ai_web_copied.txt").write_text(
-            f"PAGE_TITLE: {_firefox_title()}\nMATCHED_LINK: {clicked_title}\n\n{clean_clip}",
+            f"PAGE_TITLE: {first_title}\nMATCHED_LINK: {clicked_title}\n\n{clean_clip}",
             encoding="utf-8",
         )
 
@@ -1269,6 +1360,7 @@ def main():
     wcp.add_argument("--engine", choices=["ddg", "google"], default="ddg")
     wcp.add_argument("--scrolls", type=int, default=2)
     wcp.add_argument("--save-image", default="", help="Optional path to save featured article og:image")
+    wcp.add_argument("--image-query", default="", help="Specific entity/game query for accurate fallback image search")
     add_agent_arg(wcp)
     wcp.set_defaults(func=cmd_web_copy)
 

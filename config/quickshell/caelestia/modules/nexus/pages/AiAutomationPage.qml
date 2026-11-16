@@ -550,31 +550,15 @@ PageBase {
             onClicked: AiAutomationService.enableYdotool()
         }
 
-        // Section: Voice Assistant ("Mi Mi / Hey Mi Mi")
+        // Section: Push-to-Talk & Speech Output (Optional)
         SectionHeader {
-            text: Tr.tr("Voice Assistant (Mi Mi)")
+            text: Tr.tr("Voice Input & Speech (Optional)")
         }
 
         ToggleRow {
             first: true
-            text: "Always-On Wake Word ('Mi Mi' / 'Hey Mi Mi')"
-            subtext: !AiAutomationService.voiceVenvInstalled
-                ? "Voice runtime missing (~/.local/share/caelestia/voice-venv)"
-                : (AiAutomationService.voiceDaemonRunning
-                    ? `LIVE (${AiAutomationService.voiceState}) — ${AiAutomationService.voiceStatusText || "Say 'Mi Mi' to wake"}`
-                    : (AiAutomationService.voiceWakeEnabled
-                        ? `Starting listener... (${AiAutomationService.voiceState})`
-                        : "Off — toggle on to listen continuously for 'Mi Mi'"))
-            checked: AiAutomationService.voiceWakeEnabled
-            onToggled: {
-                AiAutomationService.voiceWakeEnabled = checked;
-                AiAutomationService.saveConfig();
-            }
-        }
-
-        ToggleRow {
-            text: "Speak AI Replies Aloud (Neural Voice)"
-            subtext: "Automatically speaks concise summaries after voice-triggered or wake-enabled tasks"
+            text: "Speak AI Replies Aloud (Push-to-Talk Runs)"
+            subtext: "Automatically speaks complete answers when you trigger AI via Speak Command Now"
             checked: AiAutomationService.voiceReplyEnabled
             onToggled: {
                 AiAutomationService.voiceReplyEnabled = checked;
@@ -584,7 +568,7 @@ PageBase {
 
         SelectRow {
             label: "Speech Recognition Model"
-            subtext: "Local faster-whisper Vietnamese + wake-word detection accuracy vs. latency"
+            subtext: "Local faster-whisper model used for one-shot voice commands"
             menuItems: root.voiceModelItems
             active: root.voiceModelItems.find(i => i.value === AiAutomationService.voiceModel) ?? root.voiceModelItems[1]
             onSelected: item => {
@@ -594,30 +578,14 @@ PageBase {
         }
 
         RowButton {
-            icon: AiAutomationService.voiceTrainingBusy ? "hourglass_top" : "record_voice_over"
-            text: AiAutomationService.voiceTrainingBusy
-                ? "Listening... Say 'Mi Mi' Clearly (2.4s)"
-                : `Train Personal 'Mi Mi' Voiceprint (${AiAutomationService.voiceSampleCount}/5 samples)`
-            subtext: "Records a short sample of your voice so wake detection prioritizes you"
-            disabled: !AiAutomationService.voiceVenvInstalled || AiAutomationService.voiceTrainingBusy
-            onClicked: AiAutomationService.trainVoiceSample()
-        }
-
-        RowButton {
+            last: true
             icon: "mic"
             text: "Speak Command Now (One-Shot Voice Prompt)"
-            subtext: "Listen immediately for one Vietnamese/English command and run Meow AI"
+            subtext: !AiAutomationService.voiceVenvInstalled
+                ? "Voice runtime missing (~/.local/share/caelestia/voice-venv)"
+                : "Click to record one Vietnamese/English voice command without always-on listening"
             disabled: !AiAutomationService.voiceVenvInstalled || AiAutomationService.running
             onClicked: AiAutomationService.listenVoiceOnce()
-        }
-
-        RowButton {
-            last: true
-            icon: "restart_alt"
-            text: "Reset Personal Voice Samples"
-            subtext: "Clear stored voiceprint samples from ~/.local/share/caelestia/ai/voice_profile.json"
-            disabled: AiAutomationService.voiceSampleCount === 0
-            onClicked: AiAutomationService.clearVoiceProfile()
         }
 
         // Section: Self-Learning Knowledge Base
