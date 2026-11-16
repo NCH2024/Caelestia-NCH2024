@@ -24,7 +24,34 @@ Searcher {
 
         model: {
             const enableDangerous = GlobalConfig.launcher.enableDangerousActions;
-            return GlobalConfig.launcher.actions.values.filter(a => a.enabled && (enableDangerous || !a.dangerous));
+            const userActs = GlobalConfig.launcher.actions.values.filter(a => a.enabled && (enableDangerous || !a.dangerous));
+            const builtIn = [
+                {
+                    name: "AI Auto Task",
+                    description: "Run autonomous Agent A -> Agent B task with live terminal",
+                    icon: "auto_awesome",
+                    command: ["autocomplete", "ai"],
+                    enabled: true,
+                    dangerous: false
+                },
+                {
+                    name: "AI Supervisor Monitor",
+                    description: "Open the live Agent A <-> Agent B progress & chat window",
+                    icon: "forum",
+                    command: ["qs", "-c", "caelestia", "ipc", "call", "ai", "openMonitor"],
+                    enabled: true,
+                    dangerous: false
+                },
+                {
+                    name: "AI Automation Settings",
+                    description: "Configure Antigravity CLI, models, quota failover & permissions",
+                    icon: "tune",
+                    command: ["qs", "-c", "caelestia", "ipc", "call", "nexus", "openPage", "14"],
+                    enabled: true,
+                    dangerous: false
+                }
+            ];
+            return builtIn.concat(userActs);
         }
 
         Action {}

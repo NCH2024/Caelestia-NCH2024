@@ -70,7 +70,7 @@ Item {
                     Wallpapers.setWallpaper(currentItem.modelData.path);
                     root.screenState.launcher = false;
                 } else if (text.startsWith(GlobalConfig.launcher.actionPrefix)) {
-                    if (text.startsWith(`${GlobalConfig.launcher.actionPrefix}calc `))
+                    if (text.startsWith(`${GlobalConfig.launcher.actionPrefix}calc `) || text === `${GlobalConfig.launcher.actionPrefix}ai` || text.startsWith(`${GlobalConfig.launcher.actionPrefix}ai `))
                         currentItem.onClicked();
                     else
                         currentItem.modelData.onClicked(list.currentList);
@@ -107,12 +107,25 @@ Item {
             }
         }
 
-        Component.onCompleted: forceActiveFocus()
+        Component.onCompleted: {
+            if (AiAutomationService.pendingLauncherText.length > 0) {
+                search.text = AiAutomationService.pendingLauncherText;
+                search.cursorPosition = search.text.length;
+                AiAutomationService.pendingLauncherText = "";
+            }
+            forceActiveFocus();
+        }
 
         Connections {
             function onLauncherChanged(): void {
-                if (!root.screenState.launcher)
+                if (!root.screenState.launcher) {
                     search.text = "";
+                } else if (AiAutomationService.pendingLauncherText.length > 0) {
+                    search.text = AiAutomationService.pendingLauncherText;
+                    search.cursorPosition = search.text.length;
+                    AiAutomationService.pendingLauncherText = "";
+                    search.forceActiveFocus();
+                }
             }
 
             function onSessionChanged(): void {

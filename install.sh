@@ -44,7 +44,7 @@ if (( INSTALL_PKGS == 1 )); then
         hyprland quickshell-git caelestia-cli \
         power-profiles-daemon pipewire wireplumber \
         ananicy-cpp pacman-contrib bluez networkmanager \
-        sddm qt6-5compat || true
+        sddm qt6-5compat grim foot ydotool python || true
     if pacman -Si scx-scheds scx-tools >/dev/null 2>&1; then
         sudo pacman -S --needed --noconfirm scx-scheds scx-tools || true
     fi
@@ -60,7 +60,7 @@ backup_if_exists "$HOME/.config/hypr"
 mkdir -p "$HOME/.config/hypr"
 cp -a "$REPO_DIR/config/hypr/." "$HOME/.config/hypr/"
 
-for f in shell.json hypr-user.lua hypr-vars.lua equalizer.json extra.json optimizer.json; do
+for f in shell.json hypr-user.lua hypr-vars.lua equalizer.json extra.json optimizer.json ai_automation.json; do
     if [[ -f "$REPO_DIR/config/caelestia/$f" ]]; then
         [[ -f "$HOME/.config/caelestia/$f" ]] && cp -a "$HOME/.config/caelestia/$f" "$HOME/.config/caelestia/${f}.bak-${TS}"
         cp -a "$REPO_DIR/config/caelestia/$f" "$HOME/.config/caelestia/$f"

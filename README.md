@@ -8,7 +8,7 @@
 
 # Caelestia × Meow Remake
 
-**A Material 3 Wayland Desktop (`Hyprland` + `Quickshell`) with One-Click Optimization, Adaptive Cooling, Seamless System & Driver Updates, Modes & Routines, and a 10-Band Studio Equalizer.**
+**A Material 3 Wayland Desktop (`Hyprland` + `Quickshell`) with AI Agent-to-Agent Automation, One-Click Optimization, Adaptive Cooling, Seamless System & Driver Updates, Modes & Routines, and a 10-Band Studio Equalizer.**
 
 [![Hyprland](https://img.shields.io/badge/Hyprland-Wayland-58E1FF?style=flat-square&logo=hyprland&logoColor=white)](https://hyprland.org/)
 [![Quickshell](https://img.shields.io/badge/Shell-Quickshell-A855F7?style=flat-square)](https://quickshell.outfoxxed.me/)
@@ -46,6 +46,10 @@
   - Switching modes via hotkey or routine displays a crisp edge OSD pill right above the Volume/Brightness sliders (`WlrLayer.Overlay` — floats cleanly over normal and fullscreen windows).
 - **Apple-Style Liquid Glass (`Wallpaper & style`):**
   - Compiled Qt6 GLSL Fresnel optical shader (`liquid_glass.frag.qsb`) applied globally across `StyledRect` cards and panels, paired with Hyprland multi-pass vibrancy blur (`size 16`, `passes 4`, `vibrancy 0.36`) for subtle curved specular rims and crystal-clear glass depth (automatically disabled for 0% overhead in Game Mode / Battery Saver).
+- **AI Task Automation (`AI Automation` + `SUPER + >`):**
+  - Deep **Antigravity CLI (`agy`)** integration in Nexus Settings: detects installation & login state (`agy`), lists all discovered models dynamically, supports interactive sign-in, and enables **automatic quota/rate-limit model failover**.
+  - **Dual-Agent Supervision (`Agent A <-> Agent B`):** **Agent A (Supervisor)** plans the task, spawns **Agent B (Worker)** in a live `foot` terminal with full autonomous & desktop-control permissions (`--dangerously-skip-permissions`, `hyprctl`, app launch, `grim`, `ydotool`), then audits Agent B's verified results against your request — pausing to ask for your confirmation inline inside the floating **AI Supervisor Monitor** chat window if anything looks wrong or incomplete.
+  - **Quick Launch (`SUPER + >` / `>ai `):** Jumps straight into AI prompt entry inside the Caelestia Launcher.
 
 ---
 
@@ -121,6 +125,27 @@ Search all active Hyprland hotkeys or visually create custom shortcuts mapped to
 
 ---
 
+### AI Automation Settings (`Antigravity CLI` & Failover)
+Inspect `agy` installation & login state, scan all 18+ models, configure **Agent A (Supervisor)** and **Agent B (Worker)**, customize the quota-exhaustion fallback chain, and manage full-permission & desktop-control flags.
+
+![AI Automation Settings](assets/screenshots/ai-settings.png)
+
+---
+
+### Quick AI Task Prompt (`SUPER + >`)
+Press **`SUPER + >`** (or type `>ai ` in the Launcher) to enter a task directly from anywhere and dispatch **Agent A -> Agent B** immediately.
+
+![Quick AI Launcher](assets/screenshots/ai-launcher.png)
+
+---
+
+### AI Supervisor Monitor & Live Agent Terminal
+Side-by-side floating **AI Supervisor Monitor** chat window and live **Agent Terminal (`foot`)** showing Agent A's plan, Agent B's autonomous execution, verification audit results, and interactive confirmation prompts when intervention is needed.
+
+![AI Supervisor Monitor and Live Terminal](assets/screenshots/ai-monitor.png)
+
+---
+
 ### 10-Band Studio Equalizer
 PipeWire 10-band DSP filter chain (`caelestia-eq.service`) with 10 instant presets, Bass/Treble boost, volume overdrive up to `150%`, channel balance, and mic noise cancellation.
 
@@ -142,7 +167,7 @@ sudo pacman -S --needed \
   hyprland quickshell-git caelestia-cli \
   power-profiles-daemon pipewire wireplumber \
   ananicy-cpp pacman-contrib bluez networkmanager \
-  sddm qt6-5compat grim
+  sddm qt6-5compat grim foot ydotool python
 
 # Optional: CachyOS sched-ext CPU schedulers (LAVD, Bpfland, Cosmos, Rusty)
 sudo pacman -S --needed scx-scheds scx-tools
@@ -221,7 +246,10 @@ qs -c caelestia ipc call nexus openPage 1            # Power, Fans & Care
 qs -c caelestia ipc call nexus openPage 5            # Audio & Studio Equalizer
 qs -c caelestia ipc call nexus openPage 7            # Updates & Drivers
 qs -c caelestia ipc call nexus openPage 13           # Keybinds & Shortcuts
-qs -c caelestia ipc call nexus openPage 14           # About (Caelestia × Meow)
+qs -c caelestia ipc call nexus openPage 14           # AI Automation
+qs -c caelestia ipc call nexus openPage 15           # About (Caelestia × Meow)
+qs -c caelestia ipc call drawers openAiLauncher      # Quick Launch AI Prompt (SUPER + >)
+qs -c caelestia ipc call ai openMonitor              # Open AI Supervisor Chat Monitor
 
 # Uninstall system helpers
 ./uninstall.sh

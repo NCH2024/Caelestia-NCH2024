@@ -226,7 +226,16 @@ QtObject {
             }
         },
 
-        // 14: About
+        // 14: AI Automation
+        Component {
+            StackPage {
+                Component {
+                    AiAutomationPage {}
+                }
+            }
+        },
+
+        // 15: About
         Component {
             StackPage {
                 Component {

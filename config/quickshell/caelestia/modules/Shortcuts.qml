@@ -2,9 +2,11 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Caelestia
+import Caelestia.Config
 import qs.components.misc
 import qs.services
 import qs.modules.nexus
+import qs.modules.ai
 
 Scope {
     id: root
@@ -140,7 +142,33 @@ Scope {
             screenState.dashboard = true;
         }
 
+        function openAiLauncher(): void {
+            if (root.hasFullscreen)
+                return;
+            AiAutomationService.pendingLauncherText = `${GlobalConfig.launcher.actionPrefix}ai `;
+            const screenState = ShellState.forActive();
+            screenState.launcher = true;
+        }
+
         target: "drawers"
+    }
+
+    IpcHandler {
+        function openMonitor(): void {
+            AiWindowFactory.create();
+        }
+
+        function runTask(prompt: string): void {
+            AiAutomationService.runTask(prompt);
+        }
+
+        function openSettings(): void {
+            WindowFactory.create(null, {
+                initialPageIdx: 14
+            });
+        }
+
+        target: "ai"
     }
 
     IpcHandler {

@@ -102,6 +102,14 @@ QtObject {
             category: "shell"
         },
 
+        // AI Automation
+        {
+            label: Tr.tr("AI Automation"),
+            icon: "auto_awesome",
+            description: Tr.tr("Antigravity CLI, model failover & Agent A->B tasks"),
+            category: "ai"
+        },
+
         // About
         {
             label: Tr.tr("About"),

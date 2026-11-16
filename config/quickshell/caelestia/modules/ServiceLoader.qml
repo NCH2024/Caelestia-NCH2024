@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Caelestia.Config
 import qs.services
+import qs.modules.ai
 
 Scope {
     Component.onCompleted: {
@@ -15,6 +16,8 @@ Scope {
         ExtraConfig;
         TaskRunner;
         EqualizerService;
+        AiAutomationService;
+        AiWindowFactory;
         Weather.reload();
 
         if (GlobalConfig.utilities.vpn.enabled)

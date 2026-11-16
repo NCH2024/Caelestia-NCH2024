@@ -38,7 +38,9 @@ PageBase {
         { label: "Modes & Routines Settings", cmd: "qs -c caelestia ipc call nexus openPage 0" },
         { label: "Power, Fans & Care Settings", cmd: "qs -c caelestia ipc call nexus openPage 1" },
         { label: "Studio Equalizer Settings", cmd: "qs -c caelestia ipc call nexus openPage 5" },
-        { label: "Keybinds & Shortcuts", cmd: "qs -c caelestia ipc call nexus openPage 13" }
+        { label: "Keybinds & Shortcuts", cmd: "qs -c caelestia ipc call nexus openPage 13" },
+        { label: "AI Automation Settings", cmd: "qs -c caelestia ipc call nexus openPage 14" },
+        { label: "AI Supervisor Monitor", cmd: "qs -c caelestia ipc call ai openMonitor" }
     ]
 
     readonly property var combinedBindings: {
@@ -201,6 +203,7 @@ entries = [
     ("Modes & System", "SUPER + ALT + G", "Toggle Gaming & Turbo Mode", "qs -c caelestia ipc call modes toggleGaming"),
     ("Modes & System", "SUPER + ALT + O", "Open Top Optimization Tab", "qs -c caelestia ipc call drawers openDashboardTab 3"),
     ("Modes & System", "SUPER + ALT + K", "Open Keybinds & Shortcuts", "qs -c caelestia ipc call nexus openPage 13"),
+    ("Modes & System", "SUPER + SHIFT + period", "Quick Launch AI Auto Task (SUPER + >)", "qs -c caelestia ipc call drawers openAiLauncher"),
     ("Shell", vars_map.get("kbShowSidebar", "SUPER + N"), "Toggle Notifications Sidebar", "caelestia:sidebar"),
     ("Shell", vars_map.get("kbShowPanels", "SUPER + K"), "Toggle All HUD Panels", "caelestia:showall"),
     ("Shell", vars_map.get("kbClearNotifs", "CTRL + ALT + C"), "Clear All Notifications", "caelestia:clearNotifs"),
