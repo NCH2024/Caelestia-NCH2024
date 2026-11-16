@@ -40,6 +40,7 @@ Singleton {
     property bool allowDesktopActions: true
     property bool askOnInvalidResult: true
     property bool showGhostCursor: true
+    property bool preferVisualCursor: false
     property int logRetentionDays: 30 // 7, 14, 30, 90, 180, or 0 (never)
 
     // Persistent conversation history & log storage
@@ -459,6 +460,7 @@ Singleton {
             fallbackModels: root.fallbackModels,
             fullPermissions: root.fullPermissions,
             allowDesktopActions: root.allowDesktopActions,
+            preferVisualCursor: root.preferVisualCursor,
             askOnInvalidResult: root.askOnInvalidResult,
             cwd: "/home/mew"
         };
@@ -658,6 +660,7 @@ Singleton {
                 allowDesktopActions: root.allowDesktopActions,
                 askOnInvalidResult: root.askOnInvalidResult,
                 showGhostCursor: root.showGhostCursor,
+                preferVisualCursor: root.preferVisualCursor,
                 logRetentionDays: root.logRetentionDays
             };
             configFile.setText(JSON.stringify(payload, null, 2));
@@ -883,6 +886,8 @@ Singleton {
                     root.askOnInvalidResult = Boolean(d.askOnInvalidResult);
                 if (d.showGhostCursor !== undefined)
                     root.showGhostCursor = Boolean(d.showGhostCursor);
+                if (d.preferVisualCursor !== undefined)
+                    root.preferVisualCursor = Boolean(d.preferVisualCursor);
                 if (d.logRetentionDays !== undefined)
                     root.logRetentionDays = Number(d.logRetentionDays);
             } catch (e) {}

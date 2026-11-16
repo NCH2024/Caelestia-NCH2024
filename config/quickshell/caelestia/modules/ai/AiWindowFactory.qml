@@ -15,7 +15,7 @@ Singleton {
         if (root.activeWindow) {
             Quickshell.execDetached([
                 "bash", "-c",
-                "hyprctl dispatch 'hl.dsp.window.focus({ window = \"title:^(Meow AI).*\" })' >/dev/null 2>&1 || hyprctl dispatch focuswindow 'title:^(Meow AI).*' >/dev/null 2>&1 || true"
+                "hyprctl dispatch 'hl.dsp.focus({ window = \"title:^(Meow AI).*\" })' >/dev/null 2>&1 || hyprctl dispatch focuswindow 'title:^(Meow AI).*' >/dev/null 2>&1 || true"
             ]);
             return;
         }

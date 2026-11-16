@@ -200,8 +200,8 @@ def hypr_focus(target: str) -> bool:
         return False
 
     addr = match["address"]
-    # Try Lua hyprctl dispatcher first, fallback to standard dispatch
-    r = run(["hyprctl", "dispatch", f'hl.dsp.window.focus({{ window = "address:{addr}" }})'])
+    # Try Lua hyprctl dispatcher (`hl.dsp.focus`) first, fallback to standard dispatch
+    r = run(["hyprctl", "dispatch", f'hl.dsp.focus({{ window = "address:{addr}" }})'])
     if r.returncode != 0:
         r = run(["hyprctl", "dispatch", "focuswindow", f"address:{addr}"])
     return r.returncode == 0
@@ -221,6 +221,7 @@ def cmd_screen(args):
         draw_grid(out)
     w, h, scale = get_monitor_info()
     cx, cy = get_cursor_pos()
+    notify_hud(cx if cx >= 0 else w // 2, cy if cy >= 0 else h // 2, "scan", "Quan sát màn hình", False)
     print(json.dumps({
         "ok": True,
         "path": out,
@@ -254,6 +255,15 @@ def cmd_windows(args):
 
 def cmd_focus(args):
     ok = hypr_focus(args.target)
+    if ok:
+        res = run(["hyprctl", "activewindow", "-j"])
+        try:
+            aw = json.loads(res.stdout)
+            ax = int(aw["at"][0] + aw["size"][0] / 2)
+            ay = int(aw["at"][1] + aw["size"][1] / 2)
+            notify_hud(ax, ay, "focus", f"Focus {args.target}", False)
+        except Exception:
+            pass
     print(json.dumps({"ok": ok, "target": args.target}))
     if not ok:
         sys.exit(1)
@@ -261,6 +271,9 @@ def cmd_focus(args):
 
 def cmd_launch(args):
     cmd = args.cmd
+    w, h, _ = get_monitor_info()
+    app_name = Path(cmd[0]).name if cmd else "app"
+    notify_hud(w // 2, h // 2, "launch", f"Mở {app_name}", False)
     subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,

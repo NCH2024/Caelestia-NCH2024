@@ -511,6 +511,16 @@ PageBase {
             }
         }
 
+        ToggleRow {
+            text: "Prefer Visual Mouse/UI Navigation"
+            subtext: "Move cursor & click buttons visually on-screen (instead of silent curl/URL shortcuts)"
+            checked: AiAutomationService.preferVisualCursor
+            onToggled: {
+                AiAutomationService.preferVisualCursor = checked;
+                AiAutomationService.saveConfig();
+            }
+        }
+
         RowButton {
             last: true
             icon: AiAutomationService.ydotoolActive ? "mouse" : "play_circle"

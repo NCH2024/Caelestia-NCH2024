@@ -185,6 +185,12 @@ Variants {
                                     return "keyboard";
                                 if (AiAutomationService.cursorAction === "scroll")
                                     return "unfold_more";
+                                if (AiAutomationService.cursorAction === "launch")
+                                    return "rocket_launch";
+                                if (AiAutomationService.cursorAction === "focus")
+                                    return "center_focus_strong";
+                                if (AiAutomationService.cursorAction === "scan")
+                                    return "screenshot_monitor";
                                 return "auto_awesome";
                             }
                             fontStyle: Tokens.font.icon.small

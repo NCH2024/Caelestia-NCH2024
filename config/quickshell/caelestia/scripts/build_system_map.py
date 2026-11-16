@@ -87,7 +87,7 @@ def main():
   - Cycle / Gaming toggle: `caelestia shell modes cycle` | `caelestia shell modes toggleGaming`
   - Verify current mode: `grep activeModeId ~/.config/caelestia/extra.json` & `powerprofilesctl get`
 - **Nexus Settings Pages:** `caelestia shell nexus openPage <0..15>` (`0`: Modes, `1`: Device Care, `5`: Equalizer, `7`: Updates, `13`: Shortcuts, `14`: AI Automation)
-- **Media / Audio:** `playerctl status`, `playerctl metadata --format '{{playerName}}: {{title}} [{{status}}]'`, `wpctl set-volume @DEFAULT_AUDIO_SINK@ 80%`
+- **Media / Audio / Display / Lock:** `playerctl status`, `playerctl metadata --format '{{{{playerName}}}}: {{{{title}}}} [{{{{status}}}}]'`, `wpctl set-volume @DEFAULT_AUDIO_SINK@ 80%`, `brightnessctl set 100%`, `caelestia shell lock lock`
 - **Telemetry / CPU:** `caelestia-telemetry` (safe thermal/fan/GPU readout), `scxctl get`
 
 ## 3. Fast Computer-Use & Browser Protocol (`caelestia-desktop`)

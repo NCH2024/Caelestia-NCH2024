@@ -200,6 +200,7 @@ class Orchestrator:
         self.auto_switch = bool(config.get("autoSwitchOnQuota", True))
         self.full_perms = bool(config.get("fullPermissions", True))
         self.allow_desktop = bool(config.get("allowDesktopActions", True))
+        self.prefer_visual_cursor = bool(config.get("preferVisualCursor", False))
         self.ask_on_invalid = bool(config.get("askOnInvalidResult", True))
         self.chat_language = str(config.get("chatLanguage", "vi") or "vi").lower()
         self.cwd = config.get("cwd") or os.path.expanduser("~")
@@ -584,11 +585,20 @@ class Orchestrator:
             detail="Đang thực thi & tự kiểm chứng..." if self.is_vi() else "Executing & verifying...",
         )
 
-        desktop_rule = (
-            "Desktop GUI control (`caelestia-desktop`) is ALLOWED."
-            if self.allow_desktop
-            else "Desktop GUI actions are DISABLED; use CLI/files only."
+        wants_visual = self.allow_desktop and (
+            self.prefer_visual_cursor
+            or bool(re.search(r"\b(chuột|con trỏ|click|bấm|nhấp|rê|cursor|mouse)\b", user_task.lower()))
         )
+        if not self.allow_desktop:
+            desktop_rule = "Desktop GUI actions are DISABLED; use CLI/files only."
+        elif wants_visual:
+            desktop_rule = (
+                "VISUAL CURSOR MODE ACTIVE: Use visible GUI mouse interactions (`caelestia-desktop launch`, "
+                "`caelestia-desktop focus`, `caelestia-desktop screen --grid`, `caelestia-desktop click <x> <y>`, "
+                "`caelestia-desktop type ...`) to operate buttons/search bars on-screen so the animated cursor is visible."
+            )
+        else:
+            desktop_rule = "Desktop GUI control (`caelestia-desktop`) is ALLOWED."
         exec_prompt = (
             "You are Meow AI executing a user request in ONE efficient session.\n"
             "Use your preloaded AGENTS.md system cheatsheet directly — DO NOT waste turns exploring config files when IPC commands are already known.\n"
