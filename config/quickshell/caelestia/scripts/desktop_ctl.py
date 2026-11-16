@@ -956,10 +956,10 @@ def cmd_office_paste(args):
         launch_cmd.append(saved_docx)
     subprocess.Popen(launch_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
-    # Wait for the real document editor window (skip splash screens / Welcome dialogs!)
+    # Wait for the real document editor window (skip splash screens / Welcome dialogs; allow ~14s for Flatpak cold start)
     win = None
-    match_token = "libreoffice-writer" if ("libreoffice" in app_name or app_name == "lowriter") else app_name
-    deadline = time.time() + 8.0
+    is_lo = ("libreoffice" in app_name or app_name == "lowriter")
+    deadline = time.time() + (14.0 if "flatpak" in app_name else 8.5)
     while time.time() < deadline:
         res_c = run(["hyprctl", "clients", "-j"])
         try:
@@ -968,7 +968,12 @@ def cmd_office_paste(args):
                 cls = str(c.get("class", "")).lower()
                 ttl = str(c.get("title", "")).lower()
                 sz = c.get("size") or [0, 0]
-                if sz[0] >= 750 and "welcome" not in ttl and (match_token in cls or match_token.split("-")[0] in ttl):
+                matched = (
+                    ("libreoffice" in cls or "soffice" in cls or "libreoffice" in ttl)
+                    if is_lo
+                    else (app_name.lower() in cls or app_name.lower() in ttl)
+                )
+                if sz[0] >= 750 and "welcome" not in ttl and matched:
                     win = c
                     break
         except Exception:

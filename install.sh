@@ -49,7 +49,7 @@ if (( INSTALL_PKGS == 1 )); then
         hyprland quickshell-git caelestia-cli \
         power-profiles-daemon pipewire wireplumber \
         ananicy-cpp pacman-contrib bluez networkmanager \
-        sddm qt6-5compat grim foot ydotool python python-pillow tesseract tesseract-data-eng tesseract-data-vie wl-clipboard libreoffice-fresh || true
+        sddm qt6-5compat grim foot ydotool python python-pillow tesseract tesseract-data-eng tesseract-data-vie wl-clipboard || true
     if pacman -Si scx-scheds scx-tools >/dev/null 2>&1; then
         sudo pacman -S --needed --noconfirm scx-scheds scx-tools || true
     fi
