@@ -42,6 +42,22 @@ Singleton {
     property bool showGhostCursor: true
     property bool preferVisualCursor: true
     property int logRetentionDays: 30 // 7, 14, 30, 90, 180, or 0 (never)
+    property bool voiceWakeEnabled: false
+    property bool voiceReplyEnabled: true
+    property string voiceModel: "base" // "tiny" | "base" | "small"
+
+    // Voice assistant ("Mi Mi") & Self-Learning Knowledge Base runtime states
+    readonly property string voicePythonBin: `${Quickshell.env("HOME")}/.local/share/caelestia/voice-venv/bin/python`
+    property bool voiceVenvInstalled: false
+    property string voiceState: "off" // "off" | "ready" | "listening" | "thinking" | "speaking"
+    property string voiceStatusText: ""
+    property int voiceSampleCount: 0
+    property bool voiceTrainingBusy: false
+    property bool _nextRunFromVoice: false
+    property bool _activeRunWasVoice: false
+    property int learnedRecipeCount: 0
+    property string learnedStatsText: "0 runs"
+    property string learnedLatestNote: ""
 
     // Persistent conversation history & log storage
     readonly property string dataRoot: `${Paths.data}/ai`
@@ -185,6 +201,116 @@ Singleton {
     function refreshLogStats(): void {
         logStatsProc.running = false;
         logStatsProc.running = true;
+    }
+
+    function refreshVoiceStatus(): void {
+        voiceStatusProc.running = false;
+        voiceStatusProc.running = true;
+    }
+
+    function refreshKnowledge(): void {
+        kbStatusProc.running = false;
+        kbStatusProc.running = true;
+    }
+
+    function rebuildKnowledgeMap(): void {
+        ensureDirsProc.running = false;
+        ensureDirsProc.running = true;
+    }
+
+    function clearKnowledge(): void {
+        kbClearProc.running = false;
+        kbClearProc.running = true;
+    }
+
+    function trainVoiceSample(): void {
+        if (!voiceVenvInstalled || voiceTrainingBusy)
+            return;
+        voiceTrainingBusy = true;
+        voiceStatusText = trChat("Hãy nói 'Mi Mi' trong 2 giây...", "Say 'Mi Mi' clearly...");
+        voiceTrainProc.running = true;
+    }
+
+    function listenVoiceOnce(): void {
+        if (!voiceVenvInstalled)
+            return;
+        voiceListenProc.command = [
+            root.voicePythonBin,
+            Quickshell.shellPath("scripts/caelestia_voice.py"),
+            "listen-once",
+            "--model", root.voiceModel,
+            "--lang", root.chatLanguage === "en" ? "en" : "vi",
+            "--dispatch"
+        ];
+        voiceListenProc.running = true;
+    }
+
+    function clearVoiceProfile(): void {
+        voiceClearProc.running = false;
+        voiceClearProc.running = true;
+    }
+
+    function speakText(msg: string): void {
+        if (!voiceVenvInstalled || !voiceReplyEnabled)
+            return;
+        const clean = String(msg ?? "").trim();
+        if (!clean)
+            return;
+        const vName = root.chatLanguage === "en" ? "en-US-AriaNeural" : "vi-VN-HoaiMyNeural";
+        ttsProc.command = [
+            root.voicePythonBin,
+            Quickshell.shellPath("scripts/caelestia_voice.py"),
+            "speak",
+            clean.slice(0, 450),
+            "--voice", vName
+        ];
+        ttsProc.running = false;
+        ttsProc.running = true;
+    }
+
+    function handleVoiceEvent(st: string, detail: string): void {
+        voiceState = st || "idle";
+        if (detail !== undefined)
+            voiceStatusText = detail;
+    }
+
+    function runVoiceTask(spokenText: string): void {
+        const clean = String(spokenText ?? "").trim();
+        if (!clean)
+            return;
+        _nextRunFromVoice = true;
+        runTask(clean, true);
+    }
+
+    function syncVoiceDaemon(): void {
+        if (!loaded)
+            return;
+        if (voiceWakeEnabled && voiceVenvInstalled) {
+            voiceDaemonProc.command = [
+                root.voicePythonBin,
+                Quickshell.shellPath("scripts/caelestia_voice.py"),
+                "daemon",
+                "--model", root.voiceModel,
+                "--lang", root.chatLanguage === "en" ? "en" : "vi"
+            ];
+            if (!voiceDaemonProc.running)
+                voiceDaemonProc.running = true;
+        } else {
+            if (voiceDaemonProc.running)
+                voiceDaemonProc.running = false;
+            if (!voiceWakeEnabled) {
+                voiceState = "off";
+                voiceStatusText = "";
+            }
+        }
+    }
+
+    onVoiceWakeEnabledChanged: syncVoiceDaemon()
+    onVoiceModelChanged: {
+        if (voiceDaemonProc.running) {
+            voiceDaemonProc.running = false;
+            Qt.callLater(() => root.syncVoiceDaemon());
+        }
     }
 
     function saveCurrentSession(): void {
@@ -510,6 +636,8 @@ Singleton {
         activeSessionId = sid;
         currentLogPath = logFile;
         running = true;
+        _activeRunWasVoice = _nextRunFromVoice;
+        _nextRunFromVoice = false;
         _taskEndedAt = 0;
         clearAllCursors();
         if (showGhostCursor)
@@ -536,6 +664,7 @@ Singleton {
             allowDesktopActions: root.allowDesktopActions,
             preferVisualCursor: root.preferVisualCursor,
             askOnInvalidResult: root.askOnInvalidResult,
+            voiceMode: root._activeRunWasVoice,
             cwd: Quickshell.env("HOME") || "/tmp"
         };
 
@@ -673,6 +802,10 @@ Singleton {
                 cursorPruneTimer.restart();
             saveCurrentSession();
             refreshLogStats();
+            refreshKnowledge();
+            if (root.voiceReplyEnabled && root.voiceVenvInstalled && (root._activeRunWasVoice || root.voiceWakeEnabled))
+                root.speakText(String(ev.summary || ""));
+            root._activeRunWasVoice = false;
             if (compactRunActive)
                 miniHudAutoHideTimer.restart();
             Toaster.toast(
@@ -684,6 +817,7 @@ Singleton {
             currentPhase = "error";
             phaseDetail = ev.message || trChat("Tác vụ gặp lỗi.", "Task failed.");
             running = false;
+            root._activeRunWasVoice = false;
             _taskEndedAt = Date.now();
             _cursorLingerMs = 900;
             if ((root.activeCursors || []).length > 0)
@@ -706,6 +840,8 @@ Singleton {
         ensureDirsProc.running = true;
         refreshEnvironment();
         refreshLogStats();
+        refreshVoiceStatus();
+        refreshKnowledge();
     }
 
     Timer {
@@ -749,7 +885,10 @@ Singleton {
                 askOnInvalidResult: root.askOnInvalidResult,
                 showGhostCursor: root.showGhostCursor,
                 preferVisualCursor: root.preferVisualCursor,
-                logRetentionDays: root.logRetentionDays
+                logRetentionDays: root.logRetentionDays,
+                voiceWakeEnabled: root.voiceWakeEnabled,
+                voiceReplyEnabled: root.voiceReplyEnabled,
+                voiceModel: root.voiceModel
             };
             configFile.setText(JSON.stringify(payload, null, 2));
         }
@@ -809,6 +948,98 @@ Singleton {
     Process {
         id: ensureDirsProc
         command: ["bash", "-c", `mkdir -p '${root.logsDir}' && python3 '${Quickshell.shellPath("scripts/build_system_map.py")}' >/dev/null 2>&1 || true`]
+        onExited: root.refreshKnowledge()
+    }
+
+    Process {
+        id: kbStatusProc
+        command: ["python3", Quickshell.shellPath("scripts/knowledge_mgr.py"), "summary"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const j = JSON.parse(text.trim() || "{}");
+                    root.learnedRecipeCount = Number(j.count ?? j.recipe_count ?? 0);
+                    const total = Number(j.total_runs || 0);
+                    const avg = Number(j.avg_sec ?? j.avg_duration_s ?? 0);
+                    root.learnedStatsText = total > 0
+                        ? `${total} runs • ${j.success_runs || 0} OK • ~${avg.toFixed(1)}s avg`
+                        : "0 runs recorded yet";
+                    root.learnedLatestNote = (Array.isArray(j.recipes) && j.recipes.length > 0)
+                        ? String(j.recipes[0].lesson || j.recipes[0].rule || "")
+                        : "";
+                } catch (e) {}
+            }
+        }
+    }
+
+    Process {
+        id: kbClearProc
+        command: ["bash", "-c", `python3 '${Quickshell.shellPath("scripts/knowledge_mgr.py")}' clear && python3 '${Quickshell.shellPath("scripts/build_system_map.py")}' >/dev/null 2>&1`]
+        onExited: root.refreshKnowledge()
+    }
+
+    Process {
+        id: voiceStatusProc
+        command: ["bash", "-c", `if [ -x '${root.voicePythonBin}' ]; then echo "VENV:1"; '${root.voicePythonBin}' '${Quickshell.shellPath("scripts/caelestia_voice.py")}' status 2>/dev/null || true; else echo "VENV:0"; fi`]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                let hasVenv = false;
+                for (const l of text.split("\n")) {
+                    const t = l.trim();
+                    if (t === "VENV:1")
+                        hasVenv = true;
+                    else if (t.startsWith("{")) {
+                        try {
+                            const j = JSON.parse(t);
+                            root.voiceSampleCount = Number(j.samples || 0);
+                        } catch (e) {}
+                    }
+                }
+                root.voiceVenvInstalled = hasVenv;
+                if (root.voiceWakeEnabled && hasVenv)
+                    root.syncVoiceDaemon();
+            }
+        }
+    }
+
+    Process {
+        id: voiceTrainProc
+        command: [root.voicePythonBin, Quickshell.shellPath("scripts/caelestia_voice.py"), "train"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const j = JSON.parse(text.trim() || "{}");
+                    if (j.ok) {
+                        root.voiceSampleCount = Number(j.samples || root.voiceSampleCount);
+                        root.voiceStatusText = root.trChat(`Đã lưu mẫu giọng (${root.voiceSampleCount}/5)`, `Saved voice sample (${root.voiceSampleCount}/5)`);
+                    } else {
+                        root.voiceStatusText = String(j.error || "Voice sample too quiet");
+                    }
+                } catch (e) {}
+            }
+        }
+        onExited: root.voiceTrainingBusy = false
+    }
+
+    Process {
+        id: voiceListenProc
+    }
+
+    Process {
+        id: voiceClearProc
+        command: [root.voicePythonBin, Quickshell.shellPath("scripts/caelestia_voice.py"), "clear-profile"]
+        onExited: {
+            root.voiceSampleCount = 0;
+            root.voiceStatusText = "";
+        }
+    }
+
+    Process {
+        id: voiceDaemonProc
+    }
+
+    Process {
+        id: ttsProc
     }
 
     Process {
@@ -1005,11 +1236,18 @@ Singleton {
                     root.preferVisualCursor = Boolean(d.preferVisualCursor);
                 if (d.logRetentionDays !== undefined)
                     root.logRetentionDays = Number(d.logRetentionDays);
+                if (d.voiceWakeEnabled !== undefined)
+                    root.voiceWakeEnabled = Boolean(d.voiceWakeEnabled);
+                if (d.voiceReplyEnabled !== undefined)
+                    root.voiceReplyEnabled = Boolean(d.voiceReplyEnabled);
+                if (d.voiceModel)
+                    root.voiceModel = String(d.voiceModel);
             } catch (e) {}
             root.loaded = true;
             root.activeSupervisorModel = root.supervisorModel;
             root.activeWorkerModel = root.workerModel;
             Qt.callLater(() => root.pruneExpiredHistory());
+            Qt.callLater(() => root.syncVoiceDaemon());
         }
         onLoadFailed: err => {
             root.loaded = true;

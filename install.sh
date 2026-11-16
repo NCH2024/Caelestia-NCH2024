@@ -6,6 +6,7 @@ WITH_SDDM=0
 WITH_POLKIT=0
 INSTALL_PKGS=0
 WITH_AI="prompt"
+WITH_VOICE=0
 
 for arg in "$@"; do
     case "$arg" in
@@ -14,13 +15,15 @@ for arg in "$@"; do
         --with-pkgs) INSTALL_PKGS=1 ;;
         --with-ai) WITH_AI="yes" ;;
         --skip-ai) WITH_AI="no" ;;
-        --all) WITH_SDDM=1; WITH_POLKIT=1; INSTALL_PKGS=1; WITH_AI="yes" ;;
+        --with-voice) WITH_VOICE=1 ;;
+        --all) WITH_SDDM=1; WITH_POLKIT=1; INSTALL_PKGS=1; WITH_AI="yes"; WITH_VOICE=1 ;;
         -h|--help)
             cat <<USAGE
 Usage: ./install.sh [OPTIONS]
   --with-pkgs     Install recommended Arch/CachyOS runtime dependencies via pacman
   --with-ai       Install Antigravity CLI (agy) without prompting (default: prompt [Y/n])
   --skip-ai       Skip Antigravity CLI installation
+  --with-voice    Create ~/.local/share/caelestia/voice-venv for "Mi Mi" Voice Assistant
   --with-sddm     Install & activate the Caelestia SDDM login theme
   --with-polkit   Configure passwordless pkexec for optimization/update UI actions
   --all           Enable all of the above
@@ -102,8 +105,17 @@ sudo install -m 0755 "$REPO_DIR/bin/caelestia-optimize" /usr/local/bin/caelestia
 sudo install -m 0755 "$REPO_DIR/bin/caelestia-telemetry" /usr/local/bin/caelestia-telemetry
 mkdir -p "$HOME/.local/bin"
 ln -sf "$HOME/.config/quickshell/caelestia/scripts/desktop_ctl.py" "$HOME/.local/bin/caelestia-desktop"
+ln -sf "$HOME/.config/quickshell/caelestia/scripts/caelestia_voice.py" "$HOME/.local/bin/caelestia-voice"
 sudo ln -sf "$HOME/.config/quickshell/caelestia/scripts/desktop_ctl.py" /usr/local/bin/caelestia-desktop
 python3 "$HOME/.config/quickshell/caelestia/scripts/build_system_map.py" >/dev/null 2>&1 || true
+
+if (( WITH_VOICE == 1 )); then
+    echo "[Optional] Setting up isolated voice-venv for 'Mi Mi' Voice Assistant..."
+    VOICE_VENV="$HOME/.local/share/caelestia/voice-venv"
+    python3 -m venv "$VOICE_VENV"
+    "$VOICE_VENV/bin/pip" install --upgrade pip >/dev/null 2>&1 || true
+    "$VOICE_VENV/bin/pip" install -q faster-whisper numpy gTTS edge-tts SpeechRecognition onnxruntime || true
+fi
 
 if (( WITH_SDDM == 1 )); then
     echo "[Optional] Installing Caelestia SDDM login theme..."

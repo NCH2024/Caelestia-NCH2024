@@ -668,31 +668,41 @@ def detect_office_app() -> tuple[str | None, list[str] | None, bool]:
     return None, None, False
 
 
-def _build_docx_file(out_path: Path, title: str, body_text: str) -> int:
-    """Create a cleanly styled Word .docx document (typography, accent headings, bullets, spacing) with pure stdlib."""
+def _build_docx_file(out_path: Path, title: str, body_text: str, image_path: str | None = None) -> int:
+    """Create a richly styled Word .docx (Noto Sans, accent headings, Markdown tables, bullets, optional hero image)."""
     import re
     import zipfile
     from xml.sax.saxutils import escape
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    paras = []
-    if title:
-        paras.append(
-            '<w:p><w:pPr><w:spacing w:before="0" w:after="120"/>'
-            '<w:pBdr><w:bottom w:val="single" w:sz="12" w:space="6" w:color="1D4ED8"/></w:pBdr></w:pPr>'
-            '<w:r><w:rPr><w:rFonts w:ascii="Noto Sans" w:hAnsi="Noto Sans"/><w:b/><w:color w:val="1E3A8A"/><w:sz w:val="38"/></w:rPr>'
-            f'<w:t xml:space="preserve">{escape(title)}</w:t></w:r></w:p>'
-        )
+    has_image = False
+    img_bytes = b""
+    emu_w, emu_h = 5200000, 2925000
+    if image_path and Path(image_path).expanduser().exists():
+        try:
+            with Image.open(Path(image_path).expanduser()) as im:
+                im_rgb = im.convert("RGB")
+                if im_rgb.width > 960:
+                    nh = max(120, round(im_rgb.height * (960 / im_rgb.width)))
+                    im_rgb = im_rgb.resize((960, nh), Image.Resampling.LANCZOS)
+                from io import BytesIO
+                buf = BytesIO()
+                im_rgb.save(buf, "JPEG", quality=86)
+                img_bytes = buf.getvalue()
+                emu_w = 5300000
+                emu_h = max(1200000, round(emu_w * (im_rgb.height / max(1, im_rgb.width))))
+                has_image = True
+        except Exception:
+            has_image = False
 
-    def render_inline_runs(text_line: str, base_sz: int = 22, base_col: str = "1F2937") -> str:
-        # Support simple **bold** inline spans cleanly
+    def render_inline_runs(text_line: str, base_sz: int = 22, base_col: str = "1F2937", force_bold: bool = False) -> str:
         tokens = re.split(r"(\*\*[^*]+\*\*)", text_line)
         runs = []
         for tok in tokens:
             if not tok:
                 continue
-            is_b = tok.startswith("**") and tok.endswith("**") and len(tok) > 4
-            val = tok[2:-2] if is_b else tok
+            is_b = force_bold or (tok.startswith("**") and tok.endswith("**") and len(tok) > 4)
+            val = tok[2:-2] if (tok.startswith("**") and tok.endswith("**") and len(tok) > 4) else tok
             b_xml = "<w:b/>" if is_b else ""
             runs.append(
                 f'<w:r><w:rPr><w:rFonts w:ascii="Noto Sans" w:hAnsi="Noto Sans"/>{b_xml}'
@@ -701,37 +711,114 @@ def _build_docx_file(out_path: Path, title: str, body_text: str) -> int:
             )
         return "".join(runs)
 
-    for line in (body_text or "").splitlines():
-        s = line.strip()
+    blocks = []
+    if title:
+        blocks.append(
+            '<w:p><w:pPr><w:spacing w:before="0" w:after="140"/>'
+            '<w:pBdr><w:bottom w:val="single" w:sz="12" w:space="6" w:color="1D4ED8"/></w:pBdr></w:pPr>'
+            + render_inline_runs(title, base_sz=38, base_col="1E3A8A", force_bold=True)
+            + "</w:p>"
+        )
+
+    if has_image:
+        blocks.append(
+            '<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="80" w:after="160"/></w:pPr><w:r><w:drawing>'
+            '<wp:inline distT="0" distB="0" distL="0" distR="0" '
+            'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
+            f'<wp:extent cx="{emu_w}" cy="{emu_h}"/>'
+            '<wp:docPr id="1" name="Featured Image"/>'
+            '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+            '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            '<pic:nvPicPr><pic:cNvPr id="1" name="image1.jpg"/><pic:cNvPicPr/></pic:nvPicPr>'
+            '<pic:blipFill><a:blip r:embed="rIdImg1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>'
+            '<a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
+            '<pic:spPr><a:xfrm><a:off x="0" y="0"/>'
+            f'<a:ext cx="{emu_w}" cy="{emu_h}"/></a:xfrm>'
+            '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>'
+            '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>'
+        )
+
+    raw_lines = (body_text or "").splitlines()
+    i = 0
+    while i < len(raw_lines):
+        s = raw_lines[i].strip()
         if not s:
-            paras.append('<w:p><w:pPr><w:spacing w:after="60"/></w:pPr></w:p>')
+            blocks.append('<w:p><w:pPr><w:spacing w:after="60"/></w:pPr></w:p>')
+            i += 1
             continue
+
+        # Render Markdown table blocks (`| a | b |`) cleanly into styled Word tables
+        if s.startswith("|") and "|" in s[1:]:
+            t_rows = []
+            while i < len(raw_lines) and raw_lines[i].strip().startswith("|"):
+                row_s = raw_lines[i].strip().strip("|")
+                cells = [c.strip() for c in row_s.split("|")]
+                if not all(re.fullmatch(r"[-:\s]+", c or "-") for c in cells):
+                    t_rows.append(cells)
+                i += 1
+            if t_rows:
+                ncols = max(len(r) for r in t_rows)
+                col_w = max(1400, 9000 // max(1, ncols))
+                tbl_xml = [
+                    '<w:tbl><w:tblPr><w:tblW w:w="9000" w:type="dxa"/>'
+                    '<w:tblBorders>'
+                    '<w:top w:val="single" w:sz="6" w:color="CBD5E1"/>'
+                    '<w:left w:val="single" w:sz="6" w:color="CBD5E1"/>'
+                    '<w:bottom w:val="single" w:sz="6" w:color="CBD5E1"/>'
+                    '<w:right w:val="single" w:sz="6" w:color="CBD5E1"/>'
+                    '<w:insideH w:val="single" w:sz="4" w:color="E2E8F0"/>'
+                    '<w:insideV w:val="single" w:sz="4" w:color="E2E8F0"/>'
+                    '</w:tblBorders></w:tblPr>'
+                ]
+                for r_idx, row in enumerate(t_rows):
+                    is_hdr = (r_idx == 0)
+                    bg = "1E40AF" if is_hdr else ("F8FAFC" if r_idx % 2 == 1 else "FFFFFF")
+                    fg = "FFFFFF" if is_hdr else "1F2937"
+                    tbl_xml.append("<w:tr>")
+                    for c_idx in range(ncols):
+                        val = row[c_idx] if c_idx < len(row) else ""
+                        tbl_xml.append(
+                            f'<w:tc><w:tcPr><w:tcW w:w="{col_w}" w:type="dxa"/>'
+                            f'<w:shd w:val="clear" w:color="auto" w:fill="{bg}"/>'
+                            '<w:tcMar><w:top w:w="80" w:type="dxa"/><w:bottom w:w="80" w:type="dxa"/>'
+                            '<w:left w:w="120" w:type="dxa"/><w:right w:w="120" w:type="dxa"/></w:tcMar></w:tcPr>'
+                            '<w:p><w:pPr><w:spacing w:before="20" w:after="20"/></w:pPr>'
+                            + render_inline_runs(val, base_sz=20, base_col=fg, force_bold=is_hdr)
+                            + "</w:p></w:tc>"
+                        )
+                    tbl_xml.append("</w:tr>")
+                tbl_xml.append("</w:tbl><w:p><w:pPr><w:spacing w:after=\"100\"/></w:pPr></w:p>")
+                blocks.append("".join(tbl_xml))
+            continue
+
+        i += 1
         if s.startswith("### "):
             clean = s[4:].strip()
-            paras.append(
+            blocks.append(
                 '<w:p><w:pPr><w:spacing w:before="140" w:after="60"/></w:pPr>'
-                + render_inline_runs(f"**{clean}**", base_sz=24, base_col="0F172A")
+                + render_inline_runs(clean, base_sz=24, base_col="0F172A", force_bold=True)
                 + "</w:p>"
             )
         elif s.startswith("## "):
             clean = s[3:].strip()
-            paras.append(
+            blocks.append(
                 '<w:p><w:pPr><w:spacing w:before="200" w:after="80"/></w:pPr>'
-                + render_inline_runs(f"**{clean}**", base_sz=28, base_col="1E40AF")
+                + render_inline_runs(clean, base_sz=28, base_col="1E40AF", force_bold=True)
                 + "</w:p>"
             )
         elif s.startswith("# "):
             clean = s[2:].strip()
             if title and clean.lower() == title.strip().lower():
                 continue
-            paras.append(
+            blocks.append(
                 '<w:p><w:pPr><w:spacing w:before="220" w:after="100"/></w:pPr>'
-                + render_inline_runs(f"**{clean}**", base_sz=32, base_col="1E3A8A")
+                + render_inline_runs(clean, base_sz=32, base_col="1E3A8A", force_bold=True)
                 + "</w:p>"
             )
         elif re.match(r"^(?:[-*•]|\d+[.)])\s+", s):
             bullet_body = re.sub(r"^(?:[-*•]|\d+[.)])\s+", "", s)
-            paras.append(
+            blocks.append(
                 '<w:p><w:pPr><w:spacing w:after="80" w:line="276" w:lineRule="auto"/>'
                 '<w:ind w:left="360" w:hanging="180"/></w:pPr>'
                 '<w:r><w:rPr><w:rFonts w:ascii="Noto Sans" w:hAnsi="Noto Sans"/><w:b/><w:color w:val="2563EB"/><w:sz w:val="22"/></w:rPr>'
@@ -740,7 +827,7 @@ def _build_docx_file(out_path: Path, title: str, body_text: str) -> int:
                 + "</w:p>"
             )
         else:
-            paras.append(
+            blocks.append(
                 '<w:p><w:pPr><w:spacing w:after="110" w:line="276" w:lineRule="auto"/></w:pPr>'
                 + render_inline_runs(s, base_sz=22, base_col="1F2937")
                 + "</w:p>"
@@ -749,15 +836,17 @@ def _build_docx_file(out_path: Path, title: str, body_text: str) -> int:
     doc_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        f'<w:body>{"".join(paras)}'
+        f'<w:body>{"".join(blocks)}'
         '<w:sectPr><w:pgMar w:top="1140" w:right="1140" w:bottom="1140" w:left="1140"/></w:sectPr>'
         '</w:body></w:document>'
     )
+    img_ct = '<Default Extension="jpg" ContentType="image/jpeg"/>' if has_image else ""
     ct_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-officedocument.relationships+xml"/>'
         '<Default Extension="xml" ContentType="application/xml"/>'
+        f'{img_ct}'
         '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
         '</Types>'
     )
@@ -767,10 +856,19 @@ def _build_docx_file(out_path: Path, title: str, body_text: str) -> int:
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
         '</Relationships>'
     )
+    doc_rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rIdImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.jpg"/>'
+        '</Relationships>'
+    )
     with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("[Content_Types].xml", ct_xml)
         zf.writestr("_rels/.rels", rels_xml)
         zf.writestr("word/document.xml", doc_xml)
+        if has_image:
+            zf.writestr("word/_rels/document.xml.rels", doc_rels_xml)
+            zf.writestr("word/media/image1.jpg", img_bytes)
     return out_path.stat().st_size
 
 
@@ -780,7 +878,7 @@ def cmd_write_docx(args):
     body_text = args.text or ""
     if args.file:
         body_text = Path(args.file).expanduser().read_text(encoding="utf-8")
-    size = _build_docx_file(out_path, args.title or "", body_text)
+    size = _build_docx_file(out_path, args.title or "", body_text, image_path=args.image or None)
     app_name, cmd, is_wp = detect_office_app()
     office_bin = app_name if is_wp else None
     if args.open and office_bin and cmd:
@@ -882,6 +980,50 @@ def cmd_web_copy(args):
         time.sleep(0.25)
 
     clip = run(["wl-paste", "--no-newline"]).stdout
+    saved_img = ""
+    if getattr(args, "save_image", ""):
+        # Grab active page URL via address bar silently & fetch og:image / featured image
+        with pointer_lock():
+            press_combo("ctrl+l")
+            time.sleep(0.08)
+            press_combo("ctrl+c")
+            time.sleep(0.1)
+            press_combo("escape")
+        page_url = run(["wl-paste", "--no-newline"]).stdout.strip()
+        if page_url.startswith("http"):
+            try:
+                import re
+                import urllib.request
+                from urllib.parse import urljoin
+                req = urllib.request.Request(page_url, headers={"User-Agent": "Mozilla/5.0"})
+                html_txt = urllib.request.urlopen(req, timeout=4.5).read().decode("utf-8", errors="ignore")
+                candidates_img = []
+                for pat in (
+                    r'<meta[^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\'][^>]+content=["\']([^"\']+)["\']',
+                    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\']',
+                    r'<img[^>]+(?:src|data-src)=["\']([^"\']+)["\']',
+                ):
+                    for found in re.findall(pat, html_txt, re.I):
+                        if found and not found.startswith("data:") and ".svg" not in found.lower():
+                            candidates_img.append(urljoin(page_url, found.strip()))
+                for img_url in candidates_img[:8]:
+                    try:
+                        raw_img = urllib.request.urlopen(urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"}), timeout=4.0).read()
+                        if len(raw_img) >= 12000:
+                            out_img = Path(args.save_image).expanduser()
+                            out_img.parent.mkdir(parents=True, exist_ok=True)
+                            out_img.write_bytes(raw_img)
+                            with Image.open(out_img) as im:
+                                if im.width >= 200 and im.height >= 120:
+                                    im.convert("RGB").save(out_img, "JPEG", quality=86)
+                                    saved_img = str(out_img)
+                                    break
+                            out_img.unlink(missing_ok=True)
+                    except Exception:
+                        continue
+            except Exception:
+                saved_img = ""
+        wl_copy_safe(clip)
     noise_pats = (
         "skip to content", "skip to main", "cookie", "accept all", "privacy policy",
         "terms of service", "sign in", "log in", "subscribe", "global navigation",
@@ -923,6 +1065,7 @@ def cmd_web_copy(args):
         "changed_page": _firefox_title() != search_title,
         "chars": len(clean_clip),
         "raw_file": "/tmp/ai_web_copied.txt",
+        "image_file": saved_img,
         "preview": clean_clip[:220],
     }, ensure_ascii=False))
 
@@ -941,7 +1084,7 @@ def cmd_office_paste(args):
     saved_docx = None
     if args.docx:
         out_p = Path(args.docx).expanduser()
-        _build_docx_file(out_p, args.title or out_p.stem.replace("_", " "), clip)
+        _build_docx_file(out_p, args.title or out_p.stem.replace("_", " "), clip, image_path=args.image or None)
         saved_docx = str(out_p)
 
     if not app_name or not cmd:
@@ -1117,6 +1260,7 @@ def main():
     wdx.add_argument("--title", default="")
     wdx.add_argument("--text", default="")
     wdx.add_argument("--file", default="")
+    wdx.add_argument("--image", default="", help="Optional hero image path to embed neatly below title")
     wdx.add_argument("--open", action="store_true")
     wdx.set_defaults(func=cmd_write_docx)
 
@@ -1124,6 +1268,7 @@ def main():
     wcp.add_argument("query")
     wcp.add_argument("--engine", choices=["ddg", "google"], default="ddg")
     wcp.add_argument("--scrolls", type=int, default=2)
+    wcp.add_argument("--save-image", default="", help="Optional path to save featured article og:image")
     add_agent_arg(wcp)
     wcp.set_defaults(func=cmd_web_copy)
 
@@ -1131,6 +1276,7 @@ def main():
     ofp.add_argument("--docx", default="", help="Optional .docx output path under ~/Documents/")
     ofp.add_argument("--title", default="")
     ofp.add_argument("--source-file", default="")
+    ofp.add_argument("--image", default="", help="Optional image path to embed neatly into .docx")
     add_agent_arg(ofp)
     ofp.set_defaults(func=cmd_office_paste)
 

@@ -95,18 +95,20 @@ def main():
   - Cycle / Gaming toggle: `caelestia shell modes cycle` | `caelestia shell modes toggleGaming`
   - Verify current mode: `grep activeModeId ~/.config/caelestia/extra.json` & `powerprofilesctl get`
 - **Nexus Settings Pages:** `caelestia shell nexus openPage <0..15>` (`0`: AI Automation, `1`: Modes, `2`: Device Care, `6`: Equalizer, `8`: Updates, `14`: Shortcuts)
-- **Media / Audio / Display / Lock:** `pactl list sink-inputs` (Firefox YouTube playback -> check `Corked: no`), `playerctl status` (native players), `wpctl set-volume @DEFAULT_AUDIO_SINK@ 80%`, `brightnessctl set 100%`, `caelestia shell lock lock`
+- **Night Light & Display:** `caelestia shell modes setNightLight <true|false> <temp>` (instant `<0.1s` IPC, e.g. `caelestia shell modes setNightLight true 3500`), `brightnessctl set 100%`
+- **Media / Audio / Lock:** `pactl list sink-inputs` (Firefox YouTube playback -> check `Corked: no`), `playerctl status` (native players), `wpctl set-volume @DEFAULT_AUDIO_SINK@ 80%`, `caelestia shell lock lock`
+- **Voice Assistant ("Mi Mi / Hey Mi Mi / Hello Mi Mi"):** `caelestia-voice` (`train`, `daemon`, `listen-once`, `speak`, `status`, `clear-profile`)
 - **Telemetry / CPU:** `caelestia-telemetry` (safe thermal/fan/GPU readout), `scxctl get`
 
 ## 3. Real-Time Multi-Cursor Computer-Use Protocol (`caelestia-desktop`)
 - **Core Operating Principle:**
   - **User-Facing Apps (Web browsing/articles, Copy/Paste, LibreOffice/Word/Editors, YouTube/Media): OPERATE VISUALLY LIKE A HUMAN** with live cursors (`--agent Browser`, `--agent Editor`). Do NOT silently bypass visible browsing/copying with headless API scraping unless the GUI step is blocked/CAPTCHA-gated!
-  - **System Controls (Modes, Brightness, Volume, Audio Verify, Lock Screen): USE FAST CLI/IPC** (`caelestia shell modes activate`, `brightnessctl`, `wpctl`, `pactl`) for instant `<0.2s` execution.
+  - **System Controls (Modes, Night Light, Brightness, Volume, Audio Verify, Lock Screen): USE FAST CLI/IPC** (`caelestia shell modes activate`, `caelestia shell modes setNightLight`, `brightnessctl`, `wpctl`, `pactl`) for instant `<0.2s` execution.
 - **Human-Like App Helpers (Visual, 1-Command Each):**
-  - Search Web -> Click Article -> Scroll -> `Ctrl+A`/`Ctrl+C`: `caelestia-desktop web-copy "<query>" [--engine ddg|google] --agent Browser`
-  - Open Highest-Priority Compatible Office/Editor (`lowriter`/`libreoffice` > `onlyoffice` > `wps` > `abiword` > `kate`) -> `Ctrl+V` Paste -> Save `.docx`: `caelestia-desktop office-paste --docx ~/Documents/<file>.docx --title "<Title>" --agent Editor`
+  - Search Web -> Click Article -> Scroll -> `Ctrl+A`/`Ctrl+C` (+ optional hero image): `caelestia-desktop web-copy "<query>" [--engine ddg|google] [--save-image /tmp/ai_article_img.jpg] --agent Browser`
+  - Open Highest-Priority Compatible Office/Editor (`lowriter`/`libreoffice` > `onlyoffice` > `wps` > `abiword` > `kate`) -> `Ctrl+V` Paste -> Save `.docx` (supports Markdown tables + `--image`): `caelestia-desktop office-paste --docx ~/Documents/<file>.docx --title "<Title>" [--image /tmp/ai_article_img.jpg] --agent Editor`
   - YouTube Search + Play + Audio Check (`--min-y 185` skips search bar): `caelestia-desktop yt-play "<song/video query>" --agent Browser`
-  - Headless `.docx` Generator (fallback only): `caelestia-desktop write-docx ~/Documents/<file>.docx --title "<Title>" --file /tmp/body.txt`
+  - Headless `.docx` Generator (fallback only): `caelestia-desktop write-docx ~/Documents/<file>.docx --title "<Title>" --file /tmp/body.txt [--image /tmp/ai_article_img.jpg]`
 - **Fast Text Clicker (`~0.8s`, Zero Vision Wait):**
   - `caelestia-desktop click-text "<text>" [--window firefox|quickshell|libreoffice] [--min-y 185] [--wait 5] [--agent <Tag>]` -> accent-insensitive OCR + smooth glide + click in ONE command!
   - `caelestia-desktop find "<text>" [--window <app>] [--min-y 185] [--wait 3]` -> returns exact pixel `(x, y)` coordinates.
@@ -119,6 +121,19 @@ def main():
 - Never claim checks pass without running them (`qmllint`, `python3 -m py_compile`, `bash -n`).
 - For UI/shell edits: keep existing comments/tokens (`Tokens`, `Colours`, `StyledRect`), sync `~/.config/quickshell/caelestia/` with `~/Caelestia-NCH2024/config/quickshell/caelestia/` if editing repo, and verify cleanly.
 """
+    try:
+        import importlib.util
+        km_path = Path(__file__).resolve().parent / "knowledge_mgr.py"
+        if km_path.exists():
+            spec = importlib.util.spec_from_file_location("knowledge_mgr", km_path)
+            if spec and spec.loader:
+                km = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(km)
+                kb_section = km.format_markdown_section()
+                if kb_section:
+                    content += "\n" + kb_section + "\n"
+    except Exception:
+        pass
     out_path.write_text(content, encoding="utf-8")
     print(f"Wrote {out_path} ({len(content)} bytes)")
 

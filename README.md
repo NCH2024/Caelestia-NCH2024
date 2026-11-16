@@ -34,9 +34,11 @@
 
 ### Why *Meow AI* Is Different
 - **🎯 120Hz Multi-Cursor Ghost Overlay (`AiCursorOverlay`):** Up to 4 simultaneous color-coded AI pointers (`Browser`, `Editor`, `Control`, `Research`) with persistent task-lifetime tracking, breathing idle states, click ripples, and smooth `420ms` fade-out transitions.
-- **🌐 Human-Like Web → Curated LibreOffice Word Pipeline:** Opens Firefox visibly, skips search widget clutter, scrolls real articles, uses AI curation to strip website menus/ads into clean bilingual sections, writes **styled `.docx` documents** (`Noto Sans`, accent blue headings, underline rules, bullet lists), and opens them natively in **LibreOffice Writer** (`Flatpak` & native) / **LinOffice**.
+- **🌐 Human-Like Web → Curated LibreOffice Word Pipeline:** Opens Firefox visibly, skips search widget clutter, scrolls real articles, uses AI curation to strip website menus/ads into clean bilingual sections, Markdown comparison **tables**, and **embedded hero images** (`--save-image` / `--image`) inside **styled `.docx` documents** (`Noto Sans`, accent blue headings, underline rules, bullet lists), and opens them natively in **LibreOffice Writer** (`Flatpak` & native) / **LinOffice**.
+- **🎙️ "Mi Mi / Hey Mi Mi / Hello Mi Mi" Personal Voice Assistant (Vietnamese + English):** Always-on low-CPU PipeWire listener with **personal 24-band Mel voiceprint training** (`caelestia-voice train`), local **`faster-whisper`** Vietnamese STT, direct task dispatch to *Meow AI*, and natural Vietnamese **neural voice replies** (`gTTS` / `edge-tts` + `espeak-ng` fallback).
+- **📚 Self-Learning Operational Knowledge Base:** Automatically records run timings & verified recipes into `~/.local/share/caelestia/ai/knowledge.json`, reflects asynchronously on slow/failed tasks without adding latency, and keeps `~/AGENTS.md` continuously up to date.
 - **🎵 Race-Free Visual YouTube & Hard OS Verification Gates:** `caelestia-desktop yt-play` uses sub-second inverted-gray OCR (`0.89s`, accent-insensitive Vietnamese+English), skips browser headers (`--min-y 185`), waits cleanly for natural autoplay, and verifies active audio via PipeWire (`pactl list sink-inputs` → `Corked: no`) — **refusing** to lock the screen or report success if playback didn't start.
-- **⚡ Hybrid 4-Tier Speed Router:** Instant CLI/IPC (`< 0.2s`) for system modes, brightness, volume & lock barriers; curated multi-track execution (`~15–27s`) for complex workflows; and adaptive multi-agent collaboration for deep coding tasks.
+- **⚡ Hybrid 4-Tier Speed Router:** Instant CLI/IPC (`< 0.2s`) for system modes, Night Light (`setNightLight`), brightness, volume & lock barriers; curated multi-track execution (`~20–28s`) for complex research+media+Word workflows; and adaptive multi-agent collaboration for deep coding tasks.
 - **🧠 Preloaded Host Awareness & Failover:** Automatically maps your machine into `~/AGENTS.md` (`build_system_map.py`), puts **AI Automation** at **#1 in Nexus Settings**, remembers per-model `429` cooldown timers (`ai_model_cooldowns.json`), and auto-rotates fallback models without stalling.
 - **⌨️ `SUPER + >` Quick Launcher & Mini Progress HUD:** Dispatch commands anywhere via `SUPER + >` (`>ai <command>`) with full `fcitx5` Vietnamese typing, compact floating status pill, and 7–180 day chat/log history retention.
 
@@ -272,6 +274,7 @@ caelestia shell -l
 # Open drawers or Nexus pages directly via CLI / keybinds
 qs -c caelestia ipc call modes cycle                  # Cycle Modes (with Edge OSD)
 qs -c caelestia ipc call modes toggleGaming           # Toggle Gaming & Turbo (with Edge OSD)
+qs -c caelestia ipc call modes setNightLight true 3500 # Instant Night Light toggle
 qs -c caelestia ipc call modes setLiquidGlass true    # Enable Liquid Glass & Water Optics
 qs -c caelestia ipc call drawers openDashboardTab 3   # Top Optimization Tab
 qs -c caelestia ipc call nexus openPage 0            # AI Automation (Top Settings Tab)

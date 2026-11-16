@@ -171,6 +171,14 @@ Scope {
             AiAutomationService.updateCursor(x, y, action, label, clicked === 1, agentId);
         }
 
+        function voiceEvent(state: string, detail: string): void {
+            AiAutomationService.handleVoiceEvent(state, detail);
+        }
+
+        function runVoiceTask(spokenText: string): void {
+            AiAutomationService.runVoiceTask(spokenText);
+        }
+
         function openSettings(): void {
             WindowFactory.create(null, {
                 initialPageIdx: 0
@@ -213,6 +221,10 @@ Scope {
 
         function setLiquidGlass(on: bool): void {
             ExtraConfig.setLiquidGlass(on);
+        }
+
+        function setNightLight(on: bool, temp: int): void {
+            ExtraConfig.applyNightLight(on, temp > 0 ? temp : ExtraConfig.nightLightTemp);
         }
 
         target: "modes"

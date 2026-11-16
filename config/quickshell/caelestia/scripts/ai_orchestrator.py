@@ -29,6 +29,15 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+try:
+    import knowledge_mgr
+except Exception:
+    knowledge_mgr = None
+
 QUOTA_PATTERNS = re.compile(
     r"(quota|rate[_\s-]?limit|resource[_\s-]?exhausted|429|too many requests|"
     r"capacity|exhausted|usage limit|limit reached|exceeded your)",
@@ -203,7 +212,64 @@ class Orchestrator:
         self.prefer_visual_cursor = bool(config.get("preferVisualCursor", True))
         self.ask_on_invalid = bool(config.get("askOnInvalidResult", True))
         self.chat_language = str(config.get("chatLanguage", "vi") or "vi").lower()
+        self.voice_mode = bool(config.get("voiceMode", False))
         self.cwd = config.get("cwd") or os.path.expanduser("~")
+
+    def _apply_quick_system_actions(self, spec: dict) -> list[str]:
+        """Apply instant (<0.15s) OS controls extracted from intent JSON without LLM tool loops."""
+        notes = []
+        nl = spec.get("night_light")
+        if nl is True:
+            res = subprocess.run(["caelestia", "shell", "modes", "setNightLight", "true", "3500"], capture_output=True, text=True)
+            if res.returncode == 0:
+                notes.append("Night Light: **Đã bật (3500K)**" if self.is_vi() else "Night Light: **Enabled (3500K)**")
+        elif nl is False:
+            res = subprocess.run(["caelestia", "shell", "modes", "setNightLight", "false", "0"], capture_output=True, text=True)
+            if res.returncode == 0:
+                notes.append("Night Light: **Đã tắt**" if self.is_vi() else "Night Light: **Disabled**")
+
+        mode_id = str(spec.get("mode_id") or "").strip().lower()
+        if mode_id in {"standard", "gaming", "work", "coding", "cinema", "sleep"}:
+            res = subprocess.run(["caelestia", "shell", "modes", "activate", mode_id], capture_output=True, text=True)
+            if res.returncode == 0:
+                notes.append(f"Chế độ hệ thống: **{mode_id}**" if self.is_vi() else f"System Mode: **{mode_id}**")
+
+        bp = spec.get("brightness_pct")
+        if isinstance(bp, (int, float)) and 5 <= int(bp) <= 100:
+            pct = int(bp)
+            subprocess.run(["brightnessctl", "set", f"{pct}%"], capture_output=True)
+            notes.append(f"Độ sáng màn hình: **{pct}%**" if self.is_vi() else f"Brightness: **{pct}%**")
+        return notes
+
+    def _record_and_reflect_async(self, user_task: str, task_start_ts: float, success: bool, route: str, summary: str = "", note: str = "") -> None:
+        """Record verified run stats into knowledge.json and asynchronously reflect if run was slow/failed."""
+        if knowledge_mgr is None:
+            return
+        dur = round(max(0.05, time.time() - task_start_ts), 2)
+        notes = [f"route={route}"]
+        if note:
+            notes.append(note)
+        try:
+            knowledge_mgr.record_run(user_task, dur, success, summary[:300], trace_notes=notes)
+        except Exception:
+            pass
+
+        if (not success or dur > 65.0) and not self.stop_requested:
+            def _reflect():
+                try:
+                    fast_m = self.fast_router_model(self.supervisor_model)
+                    prompt = (
+                        "CRITICAL: Do NOT call ANY tools. Reply immediately with ONE concise English operational rule (<=150 chars) "
+                        "to prevent repeating slowness or failure on this system.\n"
+                        f"Task: {user_task[:220]}\nRoute: {route}, Duration: {dur}s, Success: {success}\nOutcome: {summary[:220]}"
+                    )
+                    ok_r, lesson, _, _, _ = self.run_agy("router", "KB Reflect", prompt, fast_m)
+                    if ok_r and lesson and len(lesson.strip()) >= 12:
+                        topic = f"Optimize {route} workflow"
+                        knowledge_mgr.record_run(user_task, dur, success, summary[:300], learned_items=[{"topic": topic, "lesson": lesson.strip()[:190]}])
+                except Exception:
+                    pass
+            threading.Thread(target=_reflect, daemon=True).start()
 
     def is_vi(self) -> bool:
         return self.chat_language == "vi"
@@ -694,6 +760,7 @@ class Orchestrator:
                 emit("assistant_message", model=eff_m, title="Kết quả đã xác minh" if self.is_vi() else "Verified Result", text=final_txt)
                 emit("task_complete", progress=100, summary=final_txt)
                 self.logger.write("SINGLE FAST COMPLETED.", "\033[1;32m")
+                self._record_and_reflect_async(user_task, task_start_ts, True, "single_fast", final_txt)
                 return
 
             verdict = str(parsed.get("verdict") or "complete").lower()
@@ -709,6 +776,7 @@ class Orchestrator:
                     continue
                 if not ok_det:
                     emit("task_error", message=det_msg)
+                    self._record_and_reflect_async(user_task, task_start_ts, False, "single_fast", det_msg)
                     return
                 barrier_msg = self.run_final_barrier(final_barrier)
                 if barrier_msg:
@@ -716,6 +784,7 @@ class Orchestrator:
                 emit("assistant_message", model=eff_m, title="Kết quả đã xác minh" if self.is_vi() else "Verified Result", text=final_reply)
                 emit("task_complete", progress=100, summary=final_reply)
                 self.logger.write("SINGLE FAST COMPLETED.", "\033[1;32m")
+                self._record_and_reflect_async(user_task, task_start_ts, True, "single_fast", final_reply)
                 return
 
             if verdict == "needs_polish" and attempt < 3:
@@ -913,6 +982,7 @@ class Orchestrator:
                 emit("assistant_message", model="local-verify", title="Kết quả đã xác minh" if self.is_vi() else "Verified Result", text=final_reply)
                 emit("task_complete", progress=100, summary=final_reply)
                 self.logger.write("TASK COMPLETED SUCCESSFULLY.", "\033[1;32m")
+                self._record_and_reflect_async(user_task, task_start_ts, True, "multi_agent", final_reply)
                 return
             audit_model = self.fast_router_model(self.supervisor_model) if fast_synth else self.supervisor_model
             no_tool_hint = (
@@ -964,6 +1034,7 @@ class Orchestrator:
                 emit("assistant_message", model=eff_c2, title="Kết quả đã xác minh" if self.is_vi() else "Verified Result", text=final_reply)
                 emit("task_complete", progress=100, summary=final_reply)
                 self.logger.write("TASK COMPLETED SUCCESSFULLY.", "\033[1;32m")
+                self._record_and_reflect_async(user_task, task_start_ts, True, "multi_agent", final_reply)
                 return
 
             if verdict == "needs_polish" and polish_used < max_auto_polish and polish_prompt:
@@ -1277,10 +1348,13 @@ class Orchestrator:
 
         parse_prompt = (
             "CRITICAL: Do NOT call ANY tools (no run_command, no read_file, no search_web). Reply immediately with ONLY valid JSON.\n"
-            "Normalize any spelling typos (e.g. 'Onui'->'One UI', 'saung'->'sau đó') into clean search queries:\n"
+            "Normalize any spelling typos (e.g. 'Onui'->'One UI', 'saung'->'sau đó', 'Hoyovers'->'HoYoverse') into clean search queries:\n"
             f"USER REQUEST: {clean_task}\n\n"
             "Return JSON schema:\n"
-            '{"article_query":"concise search words for web","doc_filename":"Clean_Ascii_Name.docx","doc_title":"Clean Document Title","curation_focus":"what key facts/sections the user wants","yt_query":"song/video query if user asked to play YouTube else empty string"}'
+            '{"article_query":"concise search words for web","doc_filename":"Clean_Ascii_Name.docx","doc_title":"Clean Document Title",'
+            '"curation_focus":"what key facts/sections the user wants","yt_query":"song/video query if user asked to play YouTube else empty string",'
+            '"want_image":true,"night_light":null,"mode_id":"","brightness_pct":null}\n'
+            "Rules: set night_light to true/false only if user explicitly asked for Night Light; set mode_id only if user asked to switch system mode (standard/gaming/work/coding/cinema/sleep)."
         )
         ok_p, raw_p, _, eff_p, _ = self.run_agy("router", "Intent Parse", parse_prompt, fast_m)
         if not ok_p:
@@ -1295,9 +1369,15 @@ class Orchestrator:
         doc_title = str(spec.get("doc_title") or article_query).strip()
         curation_focus = str(spec.get("curation_focus") or clean_task).strip()
         yt_query = str(spec.get("yt_query") or "").strip()
+        want_image = bool(spec.get("want_image")) or bool(re.search(r"\b(ảnh|hình|minh họa|chèn ảnh|image|picture|photo)\b", clean_task.lower()))
+        img_out_path = Path("/tmp/ai_article_img.jpg")
+        try:
+            img_out_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
         self.logger.write(
-            f"Curated Web->Office pipeline -> query={article_query!r}, doc={doc_filename}, yt={yt_query!r}, barrier={final_barrier}",
+            f"Curated Web->Office pipeline -> query={article_query!r}, doc={doc_filename}, yt={yt_query!r}, img={want_image}, nl={spec.get('night_light')}, barrier={final_barrier}",
             "\033[1;36m",
         )
         emit(
@@ -1306,6 +1386,7 @@ class Orchestrator:
             title="Thực thi trực quan (Đọc web → Chọn lọc → Soạn thảo)" if self.is_vi() else "Human-Like Curated Pipeline",
             text=(
                 f"Đang mở Firefox tìm & đọc bài về **{article_query}**, lọc thông tin trọng tâm vào **{doc_filename}**"
+                + (" (kèm ảnh minh họa)" if want_image else "")
                 + (f" và phát **{yt_query}** trên YouTube." if yt_query else ".")
                 if self.is_vi()
                 else f"Browsing **{article_query}**, curating clean content into **{doc_filename}**" + (f", and playing **{yt_query}**." if yt_query else ".")
@@ -1316,11 +1397,14 @@ class Orchestrator:
         emit("phase", phase="working", progress=35, detail="Đang mở Firefox tìm, cuộn đọc & copy bài viết..." if self.is_vi() else "Browsing & scrolling article in Firefox...")
         emit("engine_start", role="executor", label="Browser", model="local-visual")
         emit("engine_step", worker="Browser", step=1, detail=f"Mở Firefox tìm & cuộn đọc: {article_query}")
+        wc_cmd = ["caelestia-desktop", "web-copy", article_query, "--scrolls", "2", "--agent", "Browser"]
+        if want_image:
+            wc_cmd += ["--save-image", str(img_out_path)]
         wc_res = subprocess.run(
-            ["caelestia-desktop", "web-copy", article_query, "--scrolls", "2", "--agent", "Browser"],
+            wc_cmd,
             capture_output=True,
             text=True,
-            timeout=35,
+            timeout=40,
         )
         if wc_res.returncode == 2:
             emit("task_error", message="Trang tìm kiếm yêu cầu xác minh CAPTCHA/người thật — AI đã dừng theo quy tắc an toàn." if self.is_vi() else "Blocked by CAPTCHA verification.")
@@ -1350,7 +1434,8 @@ class Orchestrator:
                 "STRICT RULES:\n"
                 "- Remove ALL leftover navigation menus, ads, cookie notices, 'Skip to content', login buttons, unrelated links.\n"
                 "- Select ONLY accurate, substantive facts from the source text below.\n"
-                "- Format cleanly for Word typography using `# Main Title`, `## Section Heading`, and concise `- **Key point:** details` bullets + `## Nguồn tham khảo` at the end.\n\n"
+                "- Format cleanly for Word typography using `# Main Title`, `## Section Heading`, and concise `- **Key point:** details` bullets + `## Nguồn tham khảo` at the end.\n"
+                "- When comparing items, release dates, platforms, or specs, include a concise Markdown comparison table (`| Col 1 | Col 2 |`) so it renders as a formatted Word table.\n\n"
                 f"RAW COPIED WEBPAGE TEXT:\n{raw_trimmed}"
             )
             ok_c, curated_md, err_c, _, _ = self.run_agy("router", "Editor AI", curate_prompt, fast_m)
@@ -1379,19 +1464,26 @@ class Orchestrator:
         if not cur_ok:
             curated_path.write_text(raw_trimmed, encoding="utf-8")
 
-        # Phase 4: Open highest-priority OS Office/Editor, visually paste curated text + write styled .docx
+        # Phase 4: Open highest-priority OS Office/Editor, visually paste curated text + write styled .docx (+ embedded image if saved)
         emit("phase", phase="verifying", progress=84, detail="Đang mở trình soạn thảo, dán & định dạng file Word..." if self.is_vi() else "Pasting curated doc into Office/Editor...")
         docx_out = str(Path.home() / "Documents" / doc_filename)
         emit("engine_start", role="executor", label="Editor", model="local-visual")
         emit("engine_step", worker="Editor", step=1, detail=f"Mở app & dán bài viết tinh chỉnh -> {doc_filename}")
+        op_cmd = ["caelestia-desktop", "office-paste", "--source-file", str(curated_path), "--docx", docx_out, "--title", doc_title, "--agent", "Editor"]
+        has_img = bool(want_image and img_out_path.exists() and img_out_path.stat().st_size >= 10000)
+        if has_img:
+            op_cmd += ["--image", str(img_out_path)]
         op_res = subprocess.run(
-            ["caelestia-desktop", "office-paste", "--source-file", str(curated_path), "--docx", docx_out, "--title", doc_title, "--agent", "Editor"],
+            op_cmd,
             capture_output=True,
             text=True,
             timeout=25,
         )
         op_info = extract_json_block(op_res.stdout) or {}
         emit("cursor_done", agent="Editor")
+
+        # Instant (<0.1s) OS controls extracted from intent (Night Light / Mode / Brightness)
+        sys_notes = self._apply_quick_system_actions(spec)
 
         # Phase 5: Hard OS Verification Gate before final barrier
         if yt_query and not yt_ok:
@@ -1412,10 +1504,14 @@ class Orchestrator:
 
         summary_lines = [
             f"- **Bài viết nguồn (đọc trực quan trên Firefox):** {wc_info.get('page_title') or wc_info.get('matched_link')}",
-            f"- **Biên tập & định dạng Word:** Đã lọc bỏ rác web, định dạng tiêu đề/đề mục/gạch đầu dòng sạch đẹp tại [{doc_filename}](file://{docx_out}) (trình soạn thảo đã mở: `{op_info.get('app') or 'none'}`).",
+            f"- **Biên tập & định dạng Word:** Đã lọc bỏ rác web, định dạng tiêu đề/đề mục/bảng biểu sạch đẹp tại [{doc_filename}](file://{docx_out})"
+            + (" kèm ảnh minh họa nhúng trong tài liệu" if has_img else "")
+            + f" (trình soạn thảo đã mở: `{op_info.get('app') or 'none'}`).",
         ]
         if yt_query:
             summary_lines.append(f"- **YouTube (`Corked: no`):** Đang phát *{yt_info.get('title') or yt_query}*.")
+        for sn in sys_notes:
+            summary_lines.append(f"- {sn}")
 
         if final_barrier:
             time.sleep(0.5)
@@ -1427,8 +1523,15 @@ class Orchestrator:
 
     def looks_heavy_engineering(self, user_task: str) -> bool:
         low = user_task.lower()
+        is_desktop_media = bool(
+            re.search(
+                r"\b(youtube|word|libreoffice|liboffice|\.docx|docx|night light|chế độ|độ sáng|âm lượng|bài viết|bài nhạc|game|tìm kiếm|copy|dán)\b",
+                low,
+            )
+        )
+        max_len = 500 if is_desktop_media else 180
         return bool(
-            len(user_task) > 180
+            len(user_task) > max_len
             or re.search(
                 r"\b(thêm tính năng|xây dựng tính năng|tạo module|tái cấu trúc|refactor|"
                 r"implement feature|add feature|multi-?agent|nghiên cứu.*thống kê|"
@@ -1459,6 +1562,7 @@ class Orchestrator:
             emit("phase", phase="done", progress=100, detail=fast_ans)
             emit("assistant_message", model="local-fast", title="Thực thi tức thì" if self.is_vi() else "Instant Action", text=fast_ans)
             emit("task_complete", progress=100, summary=fast_ans)
+            self._record_and_reflect_async(user_task, task_start_ts, True, "tier0_fast", fast_ans)
             return
 
         # Tier 0.5: Sequential Visual Compound Fast-Path (~5-9s, 0 cloud tokens, real Ghost Cursors!)
@@ -1467,6 +1571,7 @@ class Orchestrator:
             self.logger.write("Tier 0.5 visual compound fast-path completed.", "\033[1;32m")
             emit("assistant_message", model="local-visual", title="Hoàn tất tức thì" if self.is_vi() else "Completed Fast", text=compound_ans)
             emit("task_complete", progress=100, summary=compound_ans)
+            self._record_and_reflect_async(user_task, task_start_ts, True, "tier05_compound", compound_ans)
             return
 
         # Global safety invariant: extract end-of-task lock barrier from ALL AI routes
@@ -1476,14 +1581,20 @@ class Orchestrator:
         if self.looks_pure_qa(clean_task):
             emit("phase", phase="working", progress=35, detail="Đang trả lời nhanh..." if self.is_vi() else "Answering...")
             qa_model = self.fast_router_model(self.supervisor_model)
+            qa_style = (
+                "Voice assistant mode: reply concisely in 1-3 natural spoken sentences without Markdown tables/URLs or code formatting."
+                if self.voice_mode
+                else "Answer concisely and accurately in Markdown without running unnecessary tools:"
+            )
             ok, ans, err, eff_m, _ = self.run_agy(
                 "router",
                 "Meow AI",
-                f"{self.language_instruction()}\nAnswer concisely and accurately in Markdown without running unnecessary tools:\n{clean_task}",
+                f"{self.language_instruction()}\n{qa_style}\n{clean_task}",
                 qa_model,
             )
             if not ok:
                 emit("task_error", message=err or "Error")
+                self._record_and_reflect_async(user_task, task_start_ts, False, "direct_qa", err or "Error")
                 return
             barrier_msg = self.run_final_barrier(final_barrier)
             if barrier_msg:
@@ -1491,6 +1602,7 @@ class Orchestrator:
             emit("assistant_message", model=eff_m, title="Trả lời" if self.is_vi() else "Response", text=ans)
             emit("task_complete", progress=100, summary=ans)
             self.logger.write("DIRECT FAST QA COMPLETED.", "\033[1;32m")
+            self._record_and_reflect_async(user_task, task_start_ts, True, "direct_qa", ans)
             return
 
         if not self.looks_heavy_engineering(clean_task):
@@ -1498,8 +1610,8 @@ class Orchestrator:
             has_browser = bool(re.search(r"\b(trình duyệt|browser|firefox|youtube|google|web|bài báo|trang web)\b", low))
             has_control = bool(re.search(r"\b(chế độ|mode|cài đặt|settings|nexus|bảng điều khiển|độ sáng|âm lượng|equalizer|phần mềm|thống kê)\b", low))
             has_research_doc = bool(
-                re.search(r"\b(bài viết|bài báo|trên mạng|tìm bài|copy|chép|word|libreoffice|liboffice|\.docx|docx|soạn thảo)\b", low)
-                and re.search(r"\b(tìm|đọc|copy|chép|lưu|tạo|mở|word|libreoffice|liboffice|\.docx|docx)\b", low)
+                re.search(r"\b(bài viết|bài báo|trên mạng|tìm bài|tìm kiếm|thông tin|copy|chép|dán|word|libreoffice|liboffice|\.docx|docx|soạn thảo)\b", low)
+                and re.search(r"\b(word|libreoffice|liboffice|\.docx|docx|soạn thảo|bài viết|bài báo)\b", low)
             )
             has_youtube_play = bool(re.search(r"\b(youtube)\b", low) and re.search(r"\b(mở|phát|nghe|play)\b", low))
 
@@ -1509,15 +1621,17 @@ class Orchestrator:
                 else ""
             )
 
-            # Overhauled Human-Like Web->Curated Word/Office (+ optional YouTube) Pipeline (~15-22s total!)
+            # Overhauled Human-Like Web->Curated Word/Office (+ optional YouTube + Night Light/Mode) Pipeline (~20-28s total!)
             if self.allow_desktop and has_research_doc:
                 curated_ans = self.try_curated_web_office_pipeline(user_task, clean_task, final_barrier, task_start_ts)
                 if curated_ans == "__ABORTED__":
+                    self._record_and_reflect_async(user_task, task_start_ts, False, "curated_web_word", "Aborted at safety/verification gate")
                     return
                 if curated_ans is not None:
                     self.logger.write("Curated Web->Office pipeline completed cleanly.", "\033[1;32m")
                     emit("assistant_message", model="curated-pipeline", title="Kết quả đã tinh chỉnh & xác minh" if self.is_vi() else "Curated & Verified Result", text=curated_ans)
                     emit("task_complete", progress=100, summary=curated_ans)
+                    self._record_and_reflect_async(user_task, task_start_ts, True, "curated_web_word", curated_ans)
                     return
 
             if self.allow_desktop and self.prefer_visual_cursor and has_browser and has_control:

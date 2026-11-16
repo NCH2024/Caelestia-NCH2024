@@ -67,6 +67,24 @@ PageBase {
         }
     ]
 
+    readonly property list<MenuItem> voiceModelItems: [
+        MenuItem {
+            text: "Whisper Tiny (Fastest Wake & Commands)"
+            icon: "bolt"
+            readonly property string value: "tiny"
+        },
+        MenuItem {
+            text: "Whisper Base (Recommended Vietnamese)"
+            icon: "graphic_eq"
+            readonly property string value: "base"
+        },
+        MenuItem {
+            text: "Whisper Small (Higher Accuracy)"
+            icon: "high_quality"
+            readonly property string value: "small"
+        }
+    ]
+
     ColumnLayout {
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.top: parent.top
@@ -530,6 +548,97 @@ PageBase {
             subtext: "Enables simulated mouse clicks & keyboard typing for GUI automation"
             disabled: AiAutomationService.ydotoolActive
             onClicked: AiAutomationService.enableYdotool()
+        }
+
+        // Section: Voice Assistant ("Mi Mi / Hey Mi Mi")
+        SectionHeader {
+            text: Tr.tr("Voice Assistant (Mi Mi)")
+        }
+
+        ToggleRow {
+            first: true
+            text: "Always-On Wake Word ('Mi Mi' / 'Hey Mi Mi')"
+            subtext: !AiAutomationService.voiceVenvInstalled
+                ? "Voice runtime missing (~/.local/share/caelestia/voice-venv)"
+                : (AiAutomationService.voiceStatusText
+                    ? `State: ${AiAutomationService.voiceState} — ${AiAutomationService.voiceStatusText}`
+                    : `Continuous low-CPU PipeWire listener (${AiAutomationService.voiceState})`)
+            checked: AiAutomationService.voiceWakeEnabled
+            onToggled: {
+                AiAutomationService.voiceWakeEnabled = checked;
+                AiAutomationService.saveConfig();
+            }
+        }
+
+        ToggleRow {
+            text: "Speak AI Replies Aloud (Neural Voice)"
+            subtext: "Automatically speaks concise summaries after voice-triggered or wake-enabled tasks"
+            checked: AiAutomationService.voiceReplyEnabled
+            onToggled: {
+                AiAutomationService.voiceReplyEnabled = checked;
+                AiAutomationService.saveConfig();
+            }
+        }
+
+        SelectRow {
+            label: "Speech Recognition Model"
+            subtext: "Local faster-whisper Vietnamese + wake-word detection accuracy vs. latency"
+            menuItems: root.voiceModelItems
+            active: root.voiceModelItems.find(i => i.value === AiAutomationService.voiceModel) ?? root.voiceModelItems[1]
+            onSelected: item => {
+                AiAutomationService.voiceModel = item.value;
+                AiAutomationService.saveConfig();
+            }
+        }
+
+        RowButton {
+            icon: AiAutomationService.voiceTrainingBusy ? "hourglass_top" : "record_voice_over"
+            text: AiAutomationService.voiceTrainingBusy
+                ? "Listening... Say 'Mi Mi' Clearly (2.4s)"
+                : `Train Personal 'Mi Mi' Voiceprint (${AiAutomationService.voiceSampleCount}/5 samples)`
+            subtext: "Records a short sample of your voice so wake detection prioritizes you"
+            disabled: !AiAutomationService.voiceVenvInstalled || AiAutomationService.voiceTrainingBusy
+            onClicked: AiAutomationService.trainVoiceSample()
+        }
+
+        RowButton {
+            icon: "mic"
+            text: "Speak Command Now (One-Shot Voice Prompt)"
+            subtext: "Listen immediately for one Vietnamese/English command and run Meow AI"
+            disabled: !AiAutomationService.voiceVenvInstalled || AiAutomationService.running
+            onClicked: AiAutomationService.listenVoiceOnce()
+        }
+
+        RowButton {
+            last: true
+            icon: "restart_alt"
+            text: "Reset Personal Voice Samples"
+            subtext: "Clear stored voiceprint samples from ~/.local/share/caelestia/ai/voice_profile.json"
+            disabled: AiAutomationService.voiceSampleCount === 0
+            onClicked: AiAutomationService.clearVoiceProfile()
+        }
+
+        // Section: Self-Learning Knowledge Base
+        SectionHeader {
+            text: Tr.tr("Self-Learning Knowledge Base")
+        }
+
+        RowButton {
+            first: true
+            icon: "psychology"
+            text: `Learned System Recipes (${AiAutomationService.learnedRecipeCount} rules) — Click to Sync AGENTS.md`
+            subtext: AiAutomationService.learnedLatestNote
+                ? `${AiAutomationService.learnedStatsText} • Latest: ${AiAutomationService.learnedLatestNote}`
+                : AiAutomationService.learnedStatsText
+            onClicked: AiAutomationService.rebuildKnowledgeMap()
+        }
+
+        RowButton {
+            last: true
+            icon: "delete_sweep"
+            text: "Reset Learned Automation Memory"
+            subtext: "Restore default core recipes and clear recorded run statistics"
+            onClicked: AiAutomationService.clearKnowledge()
         }
 
         // Section: History & Execution Logs
