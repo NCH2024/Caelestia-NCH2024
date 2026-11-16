@@ -814,8 +814,20 @@ class Orchestrator:
 
             bundled = "\n\n".join(accumulated[-5:])
             all_ok = bool(collab_results) and all(r.get("ok") for r in collab_results)
-            has_blocker = bool(re.search(r"\b(blocked|unable to|cannot|could not|failed to|chưa thể|không thể|bị khóa)\b", bundled.lower()))
+            has_blocker = bool(re.search(r"\b(blocked|unable to|cannot|could not|failed to|chưa thể|không thể|bị khóa|tạm dừng|corked:\s*yes)\b", bundled.lower()))
             fast_synth = all_ok and not has_blocker
+            if fast_synth and not self.looks_heavy_engineering(user_task):
+                # Deterministic 0ms Python synthesis when non-heavy multi-tracks already verified clean state
+                summary_parts = [r["output"].strip() for r in collab_results if r.get("output", "").strip()]
+                final_reply = "\n\n".join(summary_parts) if summary_parts else ("Đã hoàn tất tất cả phân hệ." if self.is_vi() else "All tracks completed.")
+                barrier_msg = self.run_final_barrier(final_barrier)
+                if barrier_msg:
+                    final_reply = f"{final_reply}\n- {barrier_msg}"
+                self.logger.write("Zero-cloud deterministic synthesis -> complete (0ms Coordinator overhead).", "\033[1;32m")
+                emit("assistant_message", model="local-verify", title="Kết quả đã xác minh" if self.is_vi() else "Verified Result", text=final_reply)
+                emit("task_complete", progress=100, summary=final_reply)
+                self.logger.write("TASK COMPLETED SUCCESSFULLY.", "\033[1;32m")
+                return
             audit_model = self.fast_router_model(self.supervisor_model) if fast_synth else self.supervisor_model
             no_tool_hint = (
                 "All tracks succeeded cleanly and ran their own checks — synthesize `final_reply` directly WITHOUT running redundant verification commands."
@@ -958,6 +970,248 @@ class Orchestrator:
 
         return None
 
+    def try_compound_visual_fast_path(self, user_task: str) -> str | None:
+        """
+        Tier 0.5 (~4-7s, 0 cloud LLM tokens): Handles clear multi-clause desktop automation
+        (YouTube search+play + System Mode + Brightness + Volume + Post-Completion Lock)
+        visually with parallel Ghost Cursors (`--agent Browser` & `--agent Control`) + live verification.
+        Falls back cleanly (`return None`) if any clause is unrecognized or needs Cloud reasoning.
+        """
+        raw = user_task.strip()
+        if not raw or len(raw) > 260:
+            return None
+        low = raw.lower()
+        # Bail immediately for coding, files, web reading/research, or complex analysis
+        if re.search(r"\b(code|sửa file|tạo file|viết|refactor|bài báo|google|thống kê|phân tích|tại sao|giải thích|so sánh)\b", low):
+            return None
+
+        clauses = [
+            c.strip()
+            for c in re.split(
+                r"(?:\s*,\s*|\b(?:và sau đó|sau đó|đồng thời|rồi|cuối cùng|sau cùng)\b|\bvà\s+(?=(?:chuyển|đổi|bật|tắt|tăng|giảm|đặt|mở|phát|khóa|switch|set|turn|open|play|lock)\b))",
+                raw,
+                flags=re.IGNORECASE,
+            )
+            if c.strip()
+        ]
+        # Allow "mở và phát ..." inside first YouTube clause by re-joining if a clause is just "mở"
+        merged_clauses = []
+        i = 0
+        while i < len(clauses):
+            cur = clauses[i]
+            if re.fullmatch(r"(?:mở|open)", cur.lower()) and i + 1 < len(clauses):
+                merged_clauses.append(f"{cur} {clauses[i+1]}")
+                i += 2
+            else:
+                merged_clauses.append(cur)
+                i += 1
+        clauses = merged_clauses
+        if len(clauses) < 2:
+            return None
+
+        yt_query = None
+        mode_id = None
+        brightness_pct = None
+        volume_pct = None
+        mute_state = None
+        final_barrier = None
+
+        mode_map = {
+            "gaming": (r"\b(gaming|chơi game|game mode|turbo)\b", "Gaming"),
+            "cinema": (r"\b(cinema|giải trí|xem phim|media)\b", "Cinema"),
+            "work": (r"\b(work|làm việc|tập trung|focus)\b", "Work"),
+            "coding": (r"\b(coding|lập trình|developer|dev)\b", "Developer"),
+            "sleep": (r"\b(sleep|ngủ|tiết kiệm pin|battery)\b", "Night"),
+            "standard": (r"\b(standard|balanced|cân bằng|bình thường)\b", "Balanced"),
+        }
+        mode_label = None
+
+        for cl in clauses:
+            cl_low = cl.lower().strip()
+            # 1. Lock barrier
+            if re.search(r"\b(khóa màn hình|khóa máy|lock screen|lock)\b", cl_low) and len(cl_low) <= 45:
+                final_barrier = "lock"
+                continue
+            # 2. YouTube search/play
+            if "youtube" in cl_low and re.search(r"\b(mở|phát|tìm|chạy|xem|nghe|open|play|search)\b", cl_low):
+                q = re.sub(
+                    r"(?i)\b(mở|và|phát|tìm|chạy|xem|nghe|bài hát|bài|video|clip|nhạc|của|trên|ở|youtube|open|play|search|on|song)\b",
+                    " ",
+                    cl,
+                )
+                q = re.sub(r"\s+", " ", q).strip(" ,.-")
+                if q:
+                    yt_query = q
+                    continue
+                return None
+            # 3. Mode switch
+            if re.search(r"\b(chuyển|đổi|bật|kích hoạt|activate|switch|set)\b", cl_low) and re.search(r"\b(chế độ|mode)\b", cl_low):
+                matched_m = False
+                for mid, (pat, lbl) in mode_map.items():
+                    if re.search(pat, cl_low):
+                        mode_id = mid
+                        mode_label = lbl
+                        matched_m = True
+                        break
+                if matched_m:
+                    continue
+                return None
+            # 4. Brightness
+            if re.search(r"\b(độ sáng|brightness)\b", cl_low):
+                if re.search(r"\b(tối đa|max|full|hết cỡ)\b", cl_low):
+                    brightness_pct = 100
+                    continue
+                if re.search(r"\b(tối thiểu|min|thấp nhất)\b", cl_low):
+                    brightness_pct = 10
+                    continue
+                bm = re.search(r"(\d{1,3})\s*%?", cl_low)
+                if bm:
+                    brightness_pct = max(5, min(100, int(bm.group(1))))
+                    continue
+                return None
+            # 5. Volume
+            if re.search(r"\b(âm lượng|volume|tắt tiếng|bật tiếng|mute|unmute)\b", cl_low):
+                if re.search(r"\b(tắt tiếng|mute)\b", cl_low):
+                    mute_state = "1"
+                    continue
+                if re.search(r"\b(bật tiếng|unmute)\b", cl_low):
+                    mute_state = "0"
+                    continue
+                vm = re.search(r"(\d{1,3})\s*%?", cl_low)
+                if vm:
+                    volume_pct = max(0, min(150, int(vm.group(1))))
+                    continue
+                return None
+            # Unknown clause -> defer to Cloud AI cleanly
+            return None
+
+        if not (yt_query or mode_id or brightness_pct is not None or volume_pct is not None or mute_state is not None):
+            return None
+
+        self.logger.write(
+            f"Tier 0.5 visual compound fast-path -> yt={yt_query!r}, mode={mode_id}, bright={brightness_pct}, barrier={final_barrier}",
+            "\033[1;36m",
+        )
+        emit(
+            "assistant_message",
+            model="local-visual-fast",
+            title="Điều phối đa con trỏ (Siêu tốc)" if self.is_vi() else "Parallel Visual Fast-Path",
+            text=(
+                "Đang thực thi song song trên Trình duyệt và Bảng điều khiển bằng con trỏ trực quan."
+                if self.is_vi()
+                else "Executing browser & system actions in parallel with live visual cursors."
+            ),
+        )
+        emit("phase", phase="working", progress=45, detail="Đang thao tác trực quan..." if self.is_vi() else "Executing visual actions...")
+
+        from urllib.parse import quote_plus
+        from concurrent.futures import ThreadPoolExecutor
+
+        def run_browser_track() -> tuple[bool, str]:
+            emit("engine_start", role="executor", label="Browser", model="local-visual")
+            url = f"https://www.youtube.com/results?search_query={quote_plus(yt_query)}"
+            subprocess.run(["caelestia-desktop", "launch", "firefox", url, "--agent", "Browser"], capture_output=True, text=True)
+            emit("engine_step", worker="Browser", step=1, detail=f"Mở tìm kiếm YouTube: {yt_query}")
+            # Pick shortest clean keyword phrase (first 4 words) for reliable OCR match
+            q_words = yt_query.split()
+            click_kw = " ".join(q_words[:4]) if len(q_words) >= 2 else yt_query
+            res_c = subprocess.run(
+                ["caelestia-desktop", "click-text", click_kw, "--window", "firefox", "--wait", "5.5", "--agent", "Browser"],
+                capture_output=True,
+                text=True,
+            )
+            if res_c.returncode != 0 and len(q_words) >= 2:
+                # Fallback to last 2 words (e.g. artist name)
+                res_c = subprocess.run(
+                    ["caelestia-desktop", "click-text", " ".join(q_words[-2:]), "--window", "firefox", "--wait", "2.0", "--agent", "Browser"],
+                    capture_output=True,
+                    text=True,
+                )
+            emit("engine_step", worker="Browser", step=2, detail="Click phát video & kiểm tra âm thanh")
+            time.sleep(1.5)
+            pactl_out = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True).stdout
+            is_corked = False
+            has_ff_audio = False
+            for blk in pactl_out.split("Sink Input #"):
+                if "firefox" in blk.lower():
+                    has_ff_audio = True
+                    if "corked: no" in blk.lower():
+                        is_corked = False
+                        break
+                    if "corked: yes" in blk.lower():
+                        is_corked = True
+            if (not has_ff_audio or is_corked) and res_c.returncode == 0:
+                subprocess.run(["caelestia-desktop", "focus", "firefox", "--agent", "Browser"], capture_output=True)
+                subprocess.run(["caelestia-desktop", "key", "k", "--agent", "Browser"], capture_output=True)
+                time.sleep(1.0)
+                pactl_out = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True).stdout
+                has_ff_audio = any("firefox" in b.lower() and "corked: no" in b.lower() for b in pactl_out.split("Sink Input #"))
+            if res_c.returncode != 0:
+                return False, f"Chưa click được kết quả YouTube '{yt_query}'."
+            state_txt = "đang phát (`Corked: no`)" if has_ff_audio else "đã mở trang phát"
+            return True, f"Firefox YouTube (**{yt_query}**): đã tìm, click và {state_txt}."
+
+        def run_control_track() -> tuple[bool, list[str]]:
+            emit("engine_start", role="executor", label="Control", model="local-visual")
+            notes = []
+            if mode_id:
+                if self.prefer_visual_cursor and not yt_query:
+                    subprocess.run(["caelestia", "shell", "nexus", "openPage", "0"], capture_output=True)
+                    subprocess.run(
+                        ["caelestia-desktop", "click-text", mode_label or mode_id, "--window", "quickshell", "--wait", "2.5", "--agent", "Control"],
+                        capture_output=True,
+                    )
+                else:
+                    # Show Control ghost cursor subtly without fighting Firefox window focus during YouTube OCR click
+                    subprocess.run(["caelestia", "shell", "modes", "activate", mode_id], capture_output=True)
+                    subprocess.Popen(
+                        ["qs", "-c", "caelestia", "ipc", "call", "ai", "cursorEvent", "1840", "140", "auto_awesome", f"Mode: {mode_id}", "1", "Control"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                emit("engine_step", worker="Control", step=1, detail=f"Chuyển chế độ -> {mode_id}")
+                notes.append(f"Chế độ hệ thống: **{mode_id}**")
+            if brightness_pct is not None:
+                subprocess.run(["brightnessctl", "set", f"{brightness_pct}%"], capture_output=True)
+                subprocess.Popen(
+                    ["qs", "-c", "caelestia", "ipc", "call", "ai", "cursorEvent", "1840", "240", "auto_awesome", f"Sáng {brightness_pct}%", "0", "Control"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                emit("engine_step", worker="Control", step=2, detail=f"Độ sáng -> {brightness_pct}%")
+                notes.append(f"Độ sáng màn hình: **{brightness_pct}%**")
+            if volume_pct is not None:
+                subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{volume_pct}%"], capture_output=True)
+                notes.append(f"Âm lượng: **{volume_pct}%**")
+            if mute_state is not None:
+                subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", mute_state], capture_output=True)
+                notes.append("Đã tắt tiếng." if mute_state == "1" else "Đã bật tiếng.")
+            emit("cursor_done", agent="Control")
+            return True, notes
+
+        summary_lines = []
+        browser_ok = True
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_ctl = pool.submit(run_control_track) if (mode_id or brightness_pct is not None or volume_pct is not None or mute_state is not None) else None
+            fut_brw = pool.submit(run_browser_track) if yt_query else None
+            if fut_brw:
+                browser_ok, brw_msg = fut_brw.result()
+                summary_lines.append(f"- {brw_msg}")
+            if fut_ctl:
+                _, ctl_notes = fut_ctl.result()
+                for n in ctl_notes:
+                    summary_lines.append(f"- {n}")
+
+        if not browser_ok:
+            # Let LLM fallback handle tricky YouTube pages rather than giving up!
+            self.logger.write("Tier 0.5 browser click missed; handing off cleanly to AI tracks.", "\033[33m")
+            return None
+
+        barrier_msg = self.run_final_barrier(final_barrier)
+        if barrier_msg:
+            summary_lines.append(f"- {barrier_msg}")
+        return "\n".join(summary_lines)
+
     def looks_heavy_engineering(self, user_task: str) -> bool:
         low = user_task.lower()
         return bool(
@@ -991,6 +1245,14 @@ class Orchestrator:
             emit("phase", phase="done", progress=100, detail=fast_ans)
             emit("assistant_message", model="local-fast", title="Thực thi tức thì" if self.is_vi() else "Instant Action", text=fast_ans)
             emit("task_complete", progress=100, summary=fast_ans)
+            return
+
+        # Tier 0.5: Parallel Visual Compound Fast-Path (~4-7s, 0 cloud tokens, real Ghost Cursors!)
+        compound_ans = self.try_compound_visual_fast_path(user_task)
+        if compound_ans is not None:
+            self.logger.write("Tier 0.5 visual compound fast-path completed.", "\033[1;32m")
+            emit("assistant_message", model="local-visual", title="Hoàn tất tức thì" if self.is_vi() else "Completed Fast", text=compound_ans)
+            emit("task_complete", progress=100, summary=compound_ans)
             return
 
         # Fast 0ms heuristic bypasses extra cold Router LLM call for 90% of requests!

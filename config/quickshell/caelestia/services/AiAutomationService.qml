@@ -330,6 +330,20 @@ Singleton {
         }
     }
 
+    function scheduleCursorRetire(agentId: string, delayMs: int): void {
+        const cid = String(agentId || "").trim();
+        if (!cid)
+            return;
+        const now = Date.now();
+        const next = (root.activeCursors || []).slice();
+        const idx = next.findIndex(c => c.id === cid);
+        if (idx < 0)
+            return;
+        next[idx] = Object.assign({}, next[idx], { retireAt: now + Math.max(200, delayMs) });
+        root.activeCursors = next;
+        cursorPruneTimer.restart();
+    }
+
     function clearAllCursors(): void {
         for (const c of (root.activeCursors || []))
             root.cursorExpired(c.id);
@@ -361,7 +375,8 @@ Singleton {
             label: label || "Operating",
             colorHex: col,
             pulseTick: clicked ? (prevTick + 1) : prevTick,
-            updatedAt: now
+            updatedAt: now,
+            retireAt: 0
         };
         if (idx >= 0)
             next[idx] = entry;
@@ -608,7 +623,7 @@ Singleton {
         } else if (t === "cursor_done") {
             const whoDone = String(ev.agent || "").trim();
             if (whoDone)
-                expireCursor(whoDone);
+                scheduleCursorRetire(whoDone, 850);
         } else if (t === "model_switch") {
             refreshCooldowns();
             const msg = trChat(
@@ -649,7 +664,7 @@ Singleton {
             phaseDetail = trChat("Đã hoàn tất và kiểm chứng thành công.", "Verified & completed.");
             running = false;
             _taskEndedAt = Date.now();
-            _cursorLingerMs = 1300;
+            _cursorLingerMs = 2100;
             hasPendingQuestion = false;
             pendingQuestion = null;
             for (const c of (root.activeCursors || []))
@@ -742,15 +757,21 @@ Singleton {
 
     Timer {
         id: cursorPruneTimer
-        interval: 400
+        interval: 250
         repeat: true
         onTriggered: {
-            // Keep cursors alive continuously throughout the entire AI task!
-            if (root.running)
-                return;
             const now = Date.now();
             const kept = [];
             for (const c of (root.activeCursors || [])) {
+                const retireAt = Number(c.retireAt || 0);
+                // Keep primary/active cursors alive throughout the entire task; only retire marked auxiliary cursors after linger delay
+                if (root.running) {
+                    if (retireAt > 0 && now >= retireAt)
+                        root.cursorExpired(c.id);
+                    else
+                        kept.push(c);
+                    continue;
+                }
                 const refTs = root._taskEndedAt > 0 ? Math.max(root._taskEndedAt, Number(c.updatedAt || 0)) : Number(c.updatedAt || 0);
                 if ((now - refTs) < root._cursorLingerMs)
                     kept.push(c);

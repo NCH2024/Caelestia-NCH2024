@@ -37,6 +37,18 @@ Variants {
             id: cursorModel
         }
 
+        Timer {
+            id: fadePurgeTimer
+            interval: 460
+            repeat: false
+            onTriggered: {
+                for (let i = cursorModel.count - 1; i >= 0; i--) {
+                    if (cursorModel.get(i).dying)
+                        cursorModel.remove(i);
+                }
+            }
+        }
+
         Connections {
             target: AiAutomationService
 
@@ -57,7 +69,8 @@ Variants {
                         action: action,
                         label: label,
                         colorHex: colorHex,
-                        pulseTick: clicked ? (prev.pulseTick + 1) : prev.pulseTick
+                        pulseTick: clicked ? (prev.pulseTick + 1) : prev.pulseTick,
+                        dying: false
                     });
                 } else {
                     if (cursorModel.count >= 4)
@@ -69,7 +82,8 @@ Variants {
                         action: action,
                         label: label,
                         colorHex: colorHex,
-                        pulseTick: clicked ? 1 : 0
+                        pulseTick: clicked ? 1 : 0,
+                        dying: false
                     });
                 }
             }
@@ -77,7 +91,8 @@ Variants {
             function onCursorExpired(cursorId: string): void {
                 for (let i = 0; i < cursorModel.count; i++) {
                     if (cursorModel.get(i).cid === cursorId) {
-                        cursorModel.remove(i);
+                        cursorModel.setProperty(i, "dying", true);
+                        fadePurgeTimer.restart();
                         break;
                     }
                 }
@@ -100,12 +115,21 @@ Variants {
                     required property string label
                     required property string colorHex
                     required property int pulseTick
+                    required property bool dying
 
                     readonly property color accent: colorHex || Colours.palette.m3primary
                     readonly property real clampedX: Math.max(4, Math.min(stage.width - 24, tx))
                     readonly property real clampedY: Math.max(4, Math.min(stage.height - 24, ty))
 
                     anchors.fill: parent
+                    opacity: dying ? 0.0 : 1.0
+
+                    Behavior on opacity {
+                        NumberAnimation {
+                            duration: cursorRoot.dying ? 420 : 150
+                            easing.type: Easing.OutQuad
+                        }
+                    }
 
                     // Expanding click ripple ring
                     StyledRect {
@@ -205,14 +229,14 @@ Variants {
 
                         Behavior on x {
                             NumberAnimation {
-                                duration: 190
+                                duration: 240
                                 easing.type: Easing.OutCubic
                             }
                         }
 
                         Behavior on y {
                             NumberAnimation {
-                                duration: 190
+                                duration: 240
                                 easing.type: Easing.OutCubic
                             }
                         }
