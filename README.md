@@ -44,27 +44,52 @@
 
 ## Screenshots
 
-### Desktop & Top-Hover Optimization
+### Desktop Overview
+Clean Material 3 desktop with left vertical taskbar, audio spectrum visualizer, and clock/weather widget.
 
-<p align="center">
-  <img src="assets/screenshots/desktop.png" alt="Desktop Overview" width="49%" />
-  <img src="assets/screenshots/optimization-tab.png" alt="Top-Hover Optimization Tab" width="49%" />
-</p>
+![Desktop Overview](assets/screenshots/desktop.png)
 
-### Power, Cooling, Updates & Driver Center
+---
 
-<p align="center">
-  <img src="assets/screenshots/nexus-device-care.png" alt="Power, Fans & Care" width="49%" />
-  <img src="assets/screenshots/nexus-updates.png" alt="Updates & Hardware Drivers" width="49%" />
-</p>
+### Top-Hover Smart Optimization Tab
+Located right before **Weather** — shows PC health score, 1-click **Boost & Clean Now**, **Quiet / Everyday / Max Speed** presets, **Max Fan Cooling**, and **Automatic Care**.
 
-### Modes & Routines, 10-Band Equalizer & About
+![Top-Hover Optimization Tab](assets/screenshots/optimization-tab.png)
 
-<p align="center">
-  <img src="assets/screenshots/nexus-modes.png" alt="Modes & Routines" width="32.5%" />
-  <img src="assets/screenshots/nexus-equalizer.png" alt="10-Band Studio Equalizer" width="32.5%" />
-  <img src="assets/screenshots/nexus-about.png" alt="About Caelestia x Meow" width="32.5%" />
-</p>
+---
+
+### Power, Fans & Device Care
+Full control over CachyOS `scx_loader` schedulers, CPU Turbo Boost, NVMe I/O scheduler, Auto-Boost RAM Guard, Smart Cool Balanced Tuning, and manual fan curves.
+
+![Power, Fans & Care](assets/screenshots/nexus-device-care.png)
+
+---
+
+### Updates & Hardware Drivers
+Check Official, AUR, and Flatpak updates with live progress bars, recommended GPU/microcode drivers (`chwd`), UEFI firmware (`fwupdmgr`), and mirror/orphan cleanup.
+
+![Updates & Hardware Drivers](assets/screenshots/nexus-updates.png)
+
+---
+
+### Modes & Automated Routines
+One-click system profiles (**Balanced**, **Gaming & Turbo**, **Work & Focus**, **Developer**, **Cinema & Media**, **Night & Battery Saver**) plus If/Then routines triggered by schedule, running app, or Wi-Fi.
+
+![Modes & Routines](assets/screenshots/nexus-modes.png)
+
+---
+
+### 10-Band Studio Equalizer
+PipeWire 10-band DSP filter chain (`caelestia-eq.service`) with 10 instant presets, Bass/Treble boost, volume overdrive up to `150%`, channel balance, and mic noise cancellation.
+
+![10-Band Studio Equalizer](assets/screenshots/nexus-equalizer.png)
+
+---
+
+### About (Caelestia × Meow)
+Co-branded **Caelestia × Meow** hero card with adaptive Material 3 logo tinting and live system hardware readout.
+
+![About Caelestia x Meow](assets/screenshots/nexus-about.png)
 
 ---
 
