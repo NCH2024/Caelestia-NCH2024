@@ -1047,7 +1047,7 @@ class Orchestrator:
             r"^(?:mở|open|chạy)\s+(?:trình duyệt\s+)?firefox$": ["caelestia-desktop", "launch", "firefox"],
             r"^(?:mở|open|chạy)\s+terminal$": ["caelestia-desktop", "launch", "foot"],
             r"^(?:mở|open)\s+(?:cài đặt|settings|nexus)$": ["qs", "-c", "caelestia", "ipc", "call", "nexus", "open"],
-            r"^(?:mở|open)\s+equalizer$": ["qs", "-c", "caelestia", "ipc", "call", "nexus", "openPage", "5"],
+            r"^(?:mở|open)\s+equalizer$": ["qs", "-c", "caelestia", "ipc", "call", "nexus", "openPage", "6"],
         }
         for pat, cmd in app_map.items():
             if re.match(pat, low):
@@ -1210,7 +1210,7 @@ class Orchestrator:
             notes = []
             if mode_id:
                 if self.prefer_visual_cursor:
-                    subprocess.run(["caelestia", "shell", "nexus", "openPage", "0"], capture_output=True)
+                    subprocess.run(["caelestia", "shell", "nexus", "openPage", "1"], capture_output=True)
                     subprocess.run(
                         ["caelestia-desktop", "click-text", mode_label or mode_id, "--window", "quickshell", "--wait", "2.5", "--agent", "Control"],
                         capture_output=True,
@@ -1553,7 +1553,7 @@ class Orchestrator:
                             "role_name": "Control",
                             "prompt": (
                                 "Handle ONLY settings/modes/audio/brightness/app actions visually in 1 batched shell call using `--agent Control`: "
-                                "e.g., `caelestia shell nexus openPage 0 && caelestia-desktop click-text \"Cinema\" --window quickshell --wait 2.5 --agent Control && brightnessctl set 100%`, and verify final state (`extra.json`, `brightnessctl get`, etc.)."
+                                "e.g., `caelestia shell nexus openPage 1 && caelestia-desktop click-text \"Cinema\" --window quickshell --wait 2.5 --agent Control && brightnessctl set 100%`, and verify final state (`extra.json`, `brightnessctl get`, etc.)."
                                 + barrier_warn
                             ),
                             "parallel": ctl_parallel,

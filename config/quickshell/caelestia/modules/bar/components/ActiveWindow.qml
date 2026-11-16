@@ -175,7 +175,7 @@ Item {
                             if (mouse.button === Qt.RightButton) {
                                 ExtraConfig.cycleMode();
                             } else {
-                                WindowFactory.create(null, { initialPageIdx: 0 });
+                                WindowFactory.create(null, { initialPageIdx: 1 });
                             }
                         }
                     }
@@ -206,7 +206,7 @@ Item {
                             if (mouse.button === Qt.RightButton) {
                                 OptimizerService.runDeepOptimize();
                             } else {
-                                WindowFactory.create(null, { initialPageIdx: 1 });
+                                WindowFactory.create(null, { initialPageIdx: 2 });
                             }
                         }
                     }
@@ -237,7 +237,7 @@ Item {
                                 EqualizerService.enabled = !EqualizerService.enabled;
                                 EqualizerService.scheduleApply();
                             } else {
-                                WindowFactory.create(null, { initialPageIdx: 5 });
+                                WindowFactory.create(null, { initialPageIdx: 6 });
                             }
                         }
                     }

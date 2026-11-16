@@ -649,7 +649,7 @@ Item {
                             onClicked: {
                                 root.screenState.dashboard = false;
                                 WindowFactory.create(null, {
-                                    initialPageIdx: 1
+                                    initialPageIdx: 2
                                 });
                             }
                         }

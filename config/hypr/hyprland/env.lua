@@ -22,8 +22,7 @@ hl.env("XDG_CURRENT_DESKTOP", "Hyprland")
 hl.env("XDG_SESSION_TYPE", "wayland")
 hl.env("XDG_SESSION_DESKTOP", "Hyprland")
 
--- GPUs (Prefer AMD Radeon iGPU for Wayland compositing so RTX 3050 can sleep)
-hl.env("AQ_DRM_DEVICES", "/dev/dri/by-path/pci-0000:06:00.0-card:/dev/dri/by-path/pci-0000:01:00.0-card")
+-- GPUs: auto-configured for hybrid Optimus laptops by install.sh (or set AQ_DRM_DEVICES manually if needed)
 
 -- Others
 hl.env("_JAVA_AWT_WM_NONREPARENTING", "1")

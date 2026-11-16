@@ -46,7 +46,7 @@ Searcher {
                     name: "AI Automation Settings",
                     description: "Configure Antigravity CLI, models, quota failover & permissions",
                     icon: "tune",
-                    command: ["qs", "-c", "caelestia", "ipc", "call", "nexus", "openPage", "14"],
+                    command: ["qs", "-c", "caelestia", "ipc", "call", "nexus", "openPage", "0"],
                     enabled: true,
                     dangerous: false
                 }

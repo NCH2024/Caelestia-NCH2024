@@ -52,14 +52,15 @@ Item {
             focus = true;
         } else {
             const pageMap = {
-                "modes": 0,
-                "devicecare": 1,
-                "appearance": 2,
-                "network": 3,
-                "bluetooth": 4,
-                "audio": 5,
-                "disks": 6,
-                "updates": 7
+                "ai": 0,
+                "modes": 1,
+                "devicecare": 2,
+                "appearance": 3,
+                "network": 4,
+                "bluetooth": 5,
+                "audio": 6,
+                "disks": 7,
+                "updates": 8
             };
             const idx = pageMap[mode] !== undefined ? pageMap[mode] : 0;
             close();
@@ -157,7 +158,7 @@ Item {
                 anchors.fill: parent
                 nState.screen: root.screen
                 nState.animatingContainer: nexus.opacity < 1
-                nState.currentPageIdx: ["appearance", "network", "bluetooth", "audio"].indexOf(root.queuedMode)
+                nState.currentPageIdx: ({ appearance: 3, network: 4, bluetooth: 5, audio: 6 })[root.queuedMode] ?? 0
                 onClose: root.close()
             }
         }

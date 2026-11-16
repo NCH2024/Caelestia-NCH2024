@@ -366,7 +366,7 @@ ColumnLayout {
             onClicked: {
                 root.popouts.hasCurrent = false;
                 WindowFactory.create(null, {
-                    initialPageIdx: 3
+                    initialPageIdx: 4
                 });
             }
         }

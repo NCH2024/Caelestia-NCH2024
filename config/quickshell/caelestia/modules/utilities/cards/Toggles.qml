@@ -131,7 +131,7 @@ StyledRect {
                 active: Nmcli.wifiEnabled
                 hasMore: true
                 onMainClicked: Nmcli.toggleWifi()
-                onMoreClicked: root.openNexusPage(3)
+                onMoreClicked: root.openNexusPage(4)
             }
 
             // 2. Bluetooth Tile
@@ -146,7 +146,7 @@ StyledRect {
                     if (adapter)
                         adapter.enabled = !adapter.enabled;
                 }
-                onMoreClicked: root.openNexusPage(4)
+                onMoreClicked: root.openNexusPage(5)
             }
 
             // 3. Power Profile Tile (Single Source of Truth: PowerProfiles)
@@ -157,7 +157,7 @@ StyledRect {
                 active: ExtraConfig.powerProfileId === "performance"
                 hasMore: true
                 onMainClicked: ExtraConfig.cyclePowerProfile()
-                onMoreClicked: root.openNexusPage(1)
+                onMoreClicked: root.openNexusPage(2)
             }
 
             // 4. Modes & Routines Tile
@@ -168,7 +168,7 @@ StyledRect {
                 active: ExtraConfig.activeModeId !== "standard"
                 hasMore: true
                 onMainClicked: ExtraConfig.cycleMode()
-                onMoreClicked: root.openNexusPage(0)
+                onMoreClicked: root.openNexusPage(1)
             }
 
             // 5. Studio Equalizer Tile
@@ -182,7 +182,7 @@ StyledRect {
                     EqualizerService.enabled = !EqualizerService.enabled;
                     EqualizerService.scheduleApply();
                 }
-                onMoreClicked: root.openNexusPage(5)
+                onMoreClicked: root.openNexusPage(6)
             }
 
             // 6. Night Light Tile
@@ -193,7 +193,7 @@ StyledRect {
                 active: ExtraConfig.nightLightEnabled
                 hasMore: true
                 onMainClicked: ExtraConfig.applyNightLight(!ExtraConfig.nightLightEnabled, ExtraConfig.nightLightTemp)
-                onMoreClicked: root.openNexusPage(8)
+                onMoreClicked: root.openNexusPage(9)
             }
 
             // 7. Game Mode Tile
@@ -204,7 +204,7 @@ StyledRect {
                 active: GameMode.enabled
                 hasMore: true
                 onMainClicked: GameMode.enabled = !GameMode.enabled
-                onMoreClicked: root.openNexusPage(1)
+                onMoreClicked: root.openNexusPage(2)
             }
 
             // 8. Keep Awake (Idle Inhibitor) Tile
@@ -215,7 +215,7 @@ StyledRect {
                 active: IdleInhibitor.enabled
                 hasMore: true
                 onMainClicked: IdleInhibitor.enabled = !IdleInhibitor.enabled
-                onMoreClicked: root.openNexusPage(1)
+                onMoreClicked: root.openNexusPage(2)
             }
         }
 
@@ -267,7 +267,7 @@ StyledRect {
                         icon: "tune"
                         type: IconButton.Text
                         padding: 2
-                        onClicked: root.openNexusPage(5)
+                        onClicked: root.openNexusPage(6)
                     }
                 }
 
@@ -302,7 +302,7 @@ StyledRect {
                         icon: "hard_drive"
                         type: IconButton.Text
                         padding: 2
-                        onClicked: root.openNexusPage(6)
+                        onClicked: root.openNexusPage(7)
                     }
                 }
             }

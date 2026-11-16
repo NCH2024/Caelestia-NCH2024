@@ -22,7 +22,16 @@ QtObject {
     id: root
 
     readonly property list<Component> pageComps: [
-        // 0: Modes & Routines
+        // 0: AI Automation
+        Component {
+            StackPage {
+                Component {
+                    AiAutomationPage {}
+                }
+            }
+        },
+
+        // 1: Modes & Routines
         Component {
             StackPage {
                 Component {
@@ -31,7 +40,7 @@ QtObject {
             }
         },
 
-        // 1: Power, Fans & Device Care
+        // 2: Power, Fans & Device Care
         Component {
             StackPage {
                 Component {
@@ -40,7 +49,7 @@ QtObject {
             }
         },
 
-        // 2: Wallpaper & style
+        // 3: Wallpaper & style
         Component {
             StackPage {
                 Component {
@@ -58,7 +67,7 @@ QtObject {
             }
         },
 
-        // 3: Network
+        // 4: Network
         Component {
             StackPage {
                 Component {
@@ -88,7 +97,7 @@ QtObject {
             }
         },
 
-        // 4: Bluetooth & Connected devices
+        // 5: Bluetooth & Connected devices
         Component {
             StackPage {
                 Component {
@@ -103,7 +112,7 @@ QtObject {
             }
         },
 
-        // 5: Audio & Studio Equalizer
+        // 6: Audio & Studio Equalizer
         Component {
             StackPage {
                 Component {
@@ -115,7 +124,7 @@ QtObject {
             }
         },
 
-        // 6: Disks & Storage
+        // 7: Disks & Storage
         Component {
             StackPage {
                 Component {
@@ -124,7 +133,7 @@ QtObject {
             }
         },
 
-        // 7: Updates & Drivers
+        // 8: Updates & Drivers
         Component {
             StackPage {
                 Component {
@@ -133,7 +142,7 @@ QtObject {
             }
         },
 
-        // 8: Daemons, Scheduled Timers & Processes
+        // 9: Daemons, Scheduled Timers & Processes
         Component {
             StackPage {
                 Component {
@@ -142,7 +151,7 @@ QtObject {
             }
         },
 
-        // 9: Panels
+        // 10: Panels
         Component {
             StackPage {
                 Component {
@@ -181,7 +190,7 @@ QtObject {
             }
         },
 
-        // 10: Apps
+        // 11: Apps
         Component {
             StackPage {
                 Component {
@@ -196,7 +205,7 @@ QtObject {
             }
         },
 
-        // 11: Services
+        // 12: Services
         Component {
             StackPage {
                 Component {
@@ -208,7 +217,7 @@ QtObject {
             }
         },
 
-        // 12: Language & region
+        // 13: Language & region
         Component {
             StackPage {
                 Component {
@@ -217,20 +226,11 @@ QtObject {
             }
         },
 
-        // 13: Keybinds & Shortcuts
+        // 14: Keybinds & Shortcuts
         Component {
             StackPage {
                 Component {
                     ShortcutsPage {}
-                }
-            }
-        },
-
-        // 14: AI Automation
-        Component {
-            StackPage {
-                Component {
-                    AiAutomationPage {}
                 }
             }
         },

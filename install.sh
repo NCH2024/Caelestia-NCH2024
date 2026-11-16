@@ -44,22 +44,24 @@ backup_if_exists() {
 }
 
 if (( INSTALL_PKGS == 1 )); then
-    echo "[1/5] Installing runtime dependencies via pacman..."
+    echo "[1/6] Installing runtime dependencies via pacman..."
     sudo pacman -S --needed --noconfirm \
         hyprland quickshell-git caelestia-cli \
         power-profiles-daemon pipewire wireplumber \
         ananicy-cpp pacman-contrib bluez networkmanager \
-        sddm qt6-5compat grim foot ydotool python python-pillow tesseract tesseract-data-eng tesseract-data-vie wl-clipboard || true
+        sddm qt6-5compat grim foot ydotool curl noto-fonts \
+        python python-pillow tesseract tesseract-data-eng tesseract-data-vie wl-clipboard || true
     if pacman -Si scx-scheds scx-tools >/dev/null 2>&1; then
         sudo pacman -S --needed --noconfirm scx-scheds scx-tools || true
     fi
 fi
 
-echo "[2/5] Installing Quickshell, Hyprland & Caelestia user configs..."
+echo "[2/6] Installing Quickshell, Hyprland & Caelestia user configs..."
 mkdir -p "$HOME/.config/quickshell" "$HOME/.config/caelestia" "$HOME/.config/hypr"
 
 backup_if_exists "$HOME/.config/quickshell/caelestia"
 cp -a "$REPO_DIR/config/quickshell/caelestia" "$HOME/.config/quickshell/"
+chmod +x "$HOME/.config/quickshell/caelestia/scripts/"*.py 2>/dev/null || true
 
 backup_if_exists "$HOME/.config/hypr"
 mkdir -p "$HOME/.config/hypr"
@@ -72,7 +74,7 @@ for f in shell.json hypr-user.lua hypr-vars.lua equalizer.json extra.json optimi
     fi
 done
 
-echo "[3/5] Detecting GPU & hardware layout..."
+echo "[3/6] Detecting GPU & hardware layout..."
 igpu_card=""
 dgpu_card=""
 for c in /dev/dri/by-path/*-card; do
@@ -95,11 +97,12 @@ elif [[ -n "$igpu_card" ]]; then
     sed -i 's/"gpuType": "Nvidia"/"gpuType": "None"/' "$HOME/.config/caelestia/shell.json" || true
 fi
 
-echo "[4/5] Installing hardware telemetry & optimizer CLI helpers (/usr/local/bin)..."
+echo "[4/6] Installing hardware telemetry & desktop automation CLI helpers (/usr/local/bin)..."
 sudo install -m 0755 "$REPO_DIR/bin/caelestia-optimize" /usr/local/bin/caelestia-optimize
 sudo install -m 0755 "$REPO_DIR/bin/caelestia-telemetry" /usr/local/bin/caelestia-telemetry
 mkdir -p "$HOME/.local/bin"
 ln -sf "$HOME/.config/quickshell/caelestia/scripts/desktop_ctl.py" "$HOME/.local/bin/caelestia-desktop"
+sudo ln -sf "$HOME/.config/quickshell/caelestia/scripts/desktop_ctl.py" /usr/local/bin/caelestia-desktop
 python3 "$HOME/.config/quickshell/caelestia/scripts/build_system_map.py" >/dev/null 2>&1 || true
 
 if (( WITH_SDDM == 1 )); then

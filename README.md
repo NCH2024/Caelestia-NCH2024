@@ -8,14 +8,37 @@
 
 # Caelestia × Meow Remake
 
-**A Material 3 Wayland Desktop (`Hyprland` + `Quickshell`) with AI Agent-to-Agent Automation, One-Click Optimization, Adaptive Cooling, Seamless System & Driver Updates, Modes & Routines, and a 10-Band Studio Equalizer.**
+**A Next-Gen Material 3 Wayland Desktop (`Hyprland` + `Quickshell`) Powered by *Meow AI*: Real-Time Multi-Cursor GUI Automation, Human-Like Web Research & LibreOffice Word Curation, 10-Band Studio EQ, Adaptive Cooling, and Apple-Style Liquid Glass.**
 
 [![Hyprland](https://img.shields.io/badge/Hyprland-Wayland-58E1FF?style=flat-square&logo=hyprland&logoColor=white)](https://hyprland.org/)
 [![Quickshell](https://img.shields.io/badge/Shell-Quickshell-A855F7?style=flat-square)](https://quickshell.outfoxxed.me/)
+[![Meow AI](https://img.shields.io/badge/AI%20Engine-Antigravity%20Multi--Cursor-38BDF8?style=flat-square)](https://antigravity.google/)
 [![CachyOS / Arch](https://img.shields.io/badge/OS-CachyOS%20%2F%20Arch-1793D1?style=flat-square&logo=archlinux&logoColor=white)](https://cachyos.org/)
 [![Author](https://img.shields.io/badge/Made%20by-Meow%20(%40NCH2024)-FF79C6?style=flat-square&logo=github&logoColor=white)](https://github.com/NCH2024)
 
 </div>
+
+---
+
+## ✨ Flagship Feature: *Meow AI* Autonomous Desktop Control (`SUPER + >`)
+
+> **Not just a chatbot — *Meow AI* sees your screen, moves multiple color-coded 120Hz cursors in real time, reads & curates articles cleanly into LibreOffice Writer, plays YouTube with hardware audio verification, and controls system modes instantaneously.**
+
+<div align="center">
+
+![Meow AI Real-Time Multi-Cursor & LibreOffice Demo](assets/screenshots/ai-demo.gif)
+
+*Live animated demo: **Browser** (Cyan), **Editor** (Emerald), and **Control** (Amber) Ghost Cursors coordinating across Firefox, styled LibreOffice Writer `.docx`, and System Modes simultaneously.*
+
+</div>
+
+### Why *Meow AI* Is Different
+- **🎯 120Hz Multi-Cursor Ghost Overlay (`AiCursorOverlay`):** Up to 4 simultaneous color-coded AI pointers (`Browser`, `Editor`, `Control`, `Research`) with persistent task-lifetime tracking, breathing idle states, click ripples, and smooth `420ms` fade-out transitions.
+- **🌐 Human-Like Web → Curated LibreOffice Word Pipeline:** Opens Firefox visibly, skips search widget clutter, scrolls real articles, uses AI curation to strip website menus/ads into clean bilingual sections, writes **styled `.docx` documents** (`Noto Sans`, accent blue headings, underline rules, bullet lists), and opens them natively in **LibreOffice Writer** (`Flatpak` & native) / **LinOffice**.
+- **🎵 Race-Free Visual YouTube & Hard OS Verification Gates:** `caelestia-desktop yt-play` uses sub-second inverted-gray OCR (`0.89s`, accent-insensitive Vietnamese+English), skips browser headers (`--min-y 185`), waits cleanly for natural autoplay, and verifies active audio via PipeWire (`pactl list sink-inputs` → `Corked: no`) — **refusing** to lock the screen or report success if playback didn't start.
+- **⚡ Hybrid 4-Tier Speed Router:** Instant CLI/IPC (`< 0.2s`) for system modes, brightness, volume & lock barriers; curated multi-track execution (`~15–27s`) for complex workflows; and adaptive multi-agent collaboration for deep coding tasks.
+- **🧠 Preloaded Host Awareness & Failover:** Automatically maps your machine into `~/AGENTS.md` (`build_system_map.py`), puts **AI Automation** at **#1 in Nexus Settings**, remembers per-model `429` cooldown timers (`ai_model_cooldowns.json`), and auto-rotates fallback models without stalling.
+- **⌨️ `SUPER + >` Quick Launcher & Mini Progress HUD:** Dispatch commands anywhere via `SUPER + >` (`>ai <command>`) with full `fcitx5` Vietnamese typing, compact floating status pill, and 7–180 day chat/log history retention.
 
 ---
 
@@ -127,8 +150,8 @@ Search all active Hyprland hotkeys or visually create custom shortcuts mapped to
 
 ---
 
-### AI Automation Settings (`Antigravity CLI`, Language & Failover)
-Inspect `agy` installation & login state, switch **AI Chat & Response Language** (`Tiếng Việt` / `English` / `Auto`), scan all 18+ models, configure Coordinator & Execution models, customize quota-exhaustion fallback priority, and toggle optional background terminal visibility.
+### AI Automation Settings (`#1 Top Tab` — `Antigravity CLI`, Language & Failover)
+Pinned right at the **top of Nexus Settings (`openPage 0`)**: inspect `agy` installation & login state, switch **AI Chat & Response Language** (`Tiếng Việt` / `English` / `Auto`), scan all 18+ models, configure Coordinator & Execution models, customize quota-exhaustion fallback priority, and manage history/log retention.
 
 ![AI Automation Settings](assets/screenshots/ai-settings.png)
 
@@ -176,7 +199,8 @@ sudo pacman -S --needed \
   hyprland quickshell-git caelestia-cli \
   power-profiles-daemon pipewire wireplumber \
   ananicy-cpp pacman-contrib bluez networkmanager \
-  sddm qt6-5compat grim foot ydotool python
+  sddm qt6-5compat grim foot ydotool curl noto-fonts \
+  python python-pillow tesseract tesseract-data-eng tesseract-data-vie wl-clipboard
 
 # Optional: CachyOS sched-ext CPU schedulers (LAVD, Bpfland, Cosmos, Rusty)
 sudo pacman -S --needed scx-scheds scx-tools
@@ -250,12 +274,12 @@ qs -c caelestia ipc call modes cycle                  # Cycle Modes (with Edge O
 qs -c caelestia ipc call modes toggleGaming           # Toggle Gaming & Turbo (with Edge OSD)
 qs -c caelestia ipc call modes setLiquidGlass true    # Enable Liquid Glass & Water Optics
 qs -c caelestia ipc call drawers openDashboardTab 3   # Top Optimization Tab
-qs -c caelestia ipc call nexus openPage 0            # Modes & Routines
-qs -c caelestia ipc call nexus openPage 1            # Power, Fans & Care
-qs -c caelestia ipc call nexus openPage 5            # Audio & Studio Equalizer
-qs -c caelestia ipc call nexus openPage 7            # Updates & Drivers
-qs -c caelestia ipc call nexus openPage 13           # Keybinds & Shortcuts
-qs -c caelestia ipc call nexus openPage 14           # AI Automation
+qs -c caelestia ipc call nexus openPage 0            # AI Automation (Top Settings Tab)
+qs -c caelestia ipc call nexus openPage 1            # Modes & Routines
+qs -c caelestia ipc call nexus openPage 2            # Power, Fans & Care
+qs -c caelestia ipc call nexus openPage 6            # Audio & Studio Equalizer
+qs -c caelestia ipc call nexus openPage 8            # Updates & Drivers
+qs -c caelestia ipc call nexus openPage 14           # Keybinds & Shortcuts
 qs -c caelestia ipc call nexus openPage 15           # About (Caelestia × Meow)
 qs -c caelestia ipc call drawers openAiLauncher      # Quick Launch AI Prompt (SUPER + >)
 qs -c caelestia ipc call ai openMonitor              # Open AI Supervisor Chat Monitor

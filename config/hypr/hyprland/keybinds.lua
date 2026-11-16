@@ -81,7 +81,7 @@ create_bind("CTRL + SUPER + ALT + R", hl.dsp.exec_cmd("caelestia shell -r -d"), 
 create_bind("SUPER + ALT + M", hl.dsp.exec_cmd("qs -c caelestia ipc call modes cycle"), locked)
 create_bind("SUPER + ALT + G", hl.dsp.exec_cmd("qs -c caelestia ipc call modes toggleGaming"), locked)
 create_bind("SUPER + ALT + O", hl.dsp.exec_cmd("qs -c caelestia ipc call drawers openDashboardTab 3"))
-create_bind("SUPER + ALT + K", hl.dsp.exec_cmd("qs -c caelestia ipc call nexus openPage 13"))
+create_bind("SUPER + ALT + K", hl.dsp.exec_cmd("qs -c caelestia ipc call nexus openPage 14"))
 create_bind("SUPER + SHIFT + period", hl.dsp.exec_cmd("qs -c caelestia ipc call drawers openAiLauncher"))
 
 for i = 1, 10 do

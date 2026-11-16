@@ -94,7 +94,7 @@ def main():
   - Switch mode immediately (no file hunting needed): `caelestia shell modes activate <id>` (e.g. `cinema`, `gaming`, `work`, `coding`, `standard`, `sleep`)
   - Cycle / Gaming toggle: `caelestia shell modes cycle` | `caelestia shell modes toggleGaming`
   - Verify current mode: `grep activeModeId ~/.config/caelestia/extra.json` & `powerprofilesctl get`
-- **Nexus Settings Pages:** `caelestia shell nexus openPage <0..15>` (`0`: Modes, `1`: Device Care, `5`: Equalizer, `7`: Updates, `13`: Shortcuts, `14`: AI Automation)
+- **Nexus Settings Pages:** `caelestia shell nexus openPage <0..15>` (`0`: AI Automation, `1`: Modes, `2`: Device Care, `6`: Equalizer, `8`: Updates, `14`: Shortcuts)
 - **Media / Audio / Display / Lock:** `pactl list sink-inputs` (Firefox YouTube playback -> check `Corked: no`), `playerctl status` (native players), `wpctl set-volume @DEFAULT_AUDIO_SINK@ 80%`, `brightnessctl set 100%`, `caelestia shell lock lock`
 - **Telemetry / CPU:** `caelestia-telemetry` (safe thermal/fan/GPU readout), `scxctl get`
 

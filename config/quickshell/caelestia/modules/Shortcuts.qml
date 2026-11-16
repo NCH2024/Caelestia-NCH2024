@@ -173,7 +173,7 @@ Scope {
 
         function openSettings(): void {
             WindowFactory.create(null, {
-                initialPageIdx: 14
+                initialPageIdx: 0
             });
         }
 

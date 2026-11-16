@@ -536,7 +536,7 @@ Singleton {
             allowDesktopActions: root.allowDesktopActions,
             preferVisualCursor: root.preferVisualCursor,
             askOnInvalidResult: root.askOnInvalidResult,
-            cwd: "/home/mew"
+            cwd: Quickshell.env("HOME") || "/tmp"
         };
 
         orchestratorProc.command = [

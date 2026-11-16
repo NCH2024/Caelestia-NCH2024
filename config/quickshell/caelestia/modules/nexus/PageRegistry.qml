@@ -7,6 +7,14 @@ QtObject {
     id: root
 
     readonly property list<var> pages: [
+        // AI Automation (Top Priority)
+        {
+            label: Tr.tr("AI Automation"),
+            icon: "auto_awesome",
+            description: Tr.tr("Antigravity CLI, chat language, model failover & automation"),
+            category: "ai"
+        },
+
         // Smart & Hardware
         {
             label: Tr.tr("Modes & Routines"),
@@ -100,14 +108,6 @@ QtObject {
             icon: "keyboard",
             description: Tr.tr("View system hotkeys & bind modes/commands"),
             category: "shell"
-        },
-
-        // AI Automation
-        {
-            label: Tr.tr("AI Automation"),
-            icon: "auto_awesome",
-            description: Tr.tr("Antigravity CLI, chat language, model failover & automation"),
-            category: "ai"
         },
 
         // About

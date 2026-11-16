@@ -370,7 +370,7 @@ Item {
                     icon: "tune"
                     type: IconButton.Text
                     padding: Tokens.padding.extraSmall
-                    onClicked: Quickshell.execDetached(["qs", "-c", "caelestia", "ipc", "call", "nexus", "openPage", "14"])
+                    onClicked: Quickshell.execDetached(["qs", "-c", "caelestia", "ipc", "call", "nexus", "openPage", "0"])
                 }
 
                 IconButton {
