@@ -60,6 +60,159 @@ Item {
         }
     }
 
+    function escapeHtml(s: string): string {
+        return String(s || "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+    }
+
+    function formatInline(s: string, codeBg: string, linkColor: string): string {
+        let out = escapeHtml(s);
+        // Inline code: `code`
+        out = out.replace(/`([^`\n]+)`/g, `<code style="font-family: monospace; background-color: ${codeBg}; padding: 1px 4px;">$1</code>`);
+        // Bold: **text** or __text__
+        out = out.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+        out = out.replace(/__([^_\n]+)__/g, "<b>$1</b>");
+        // Italic: *text*
+        out = out.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<i>$2</i>");
+        // Links: [text](url)
+        out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, `<a href="$2" style="color: ${linkColor}; text-decoration: underline;">$1</a>`);
+        return out;
+    }
+
+    function renderMarkdown(md: string, role: string): string {
+        const text = String(md || "");
+        if (!text)
+            return "";
+
+        const isUser = role === "user";
+        const codeBg = isUser ? Qt.alpha(Colours.palette.m3onPrimaryContainer, 0.14) : Qt.alpha(Colours.palette.m3surface, 0.65);
+        const tableBg = isUser ? Qt.alpha(Colours.palette.m3onPrimaryContainer, 0.08) : Qt.alpha(Colours.palette.m3surface, 0.45);
+        const headerBg = isUser ? Qt.alpha(Colours.palette.m3onPrimaryContainer, 0.18) : Qt.alpha(Colours.palette.m3primary, 0.18);
+        const accentColor = isUser ? Colours.palette.m3onPrimaryContainer : Colours.palette.m3primary;
+        const linkColor = accentColor;
+
+        // Extract fenced code blocks first
+        const codeBlocks = [];
+        const tokenized = text.replace(/```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g, function(_, lang, code) {
+            const idx = codeBlocks.length;
+            const langLabel = lang ? `<div style="font-size: 10px; font-weight: bold; color: ${accentColor}; margin-bottom: 4px;">${escapeHtml(lang.toUpperCase())}</div>` : "";
+            const blockHtml = `<table width="100%" cellspacing="0" cellpadding="8" style="background-color: ${codeBg}; margin-top: 6px; margin-bottom: 6px;"><tr><td>${langLabel}<pre style="font-family: monospace; white-space: pre-wrap; margin: 0;">${escapeHtml(code.replace(/\n$/, ""))}</pre></td></tr></table>`;
+            codeBlocks.push(blockHtml);
+            return `@@CODEBLOCK_${idx}@@`;
+        });
+
+        const lines = tokenized.split(/\r?\n/);
+        const htmlParts = [];
+        let i = 0;
+
+        while (i < lines.length) {
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            if (!trimmed) {
+                i++;
+                continue;
+            }
+
+            // Code block placeholder
+            const cbMatch = trimmed.match(/^@@CODEBLOCK_(\d+)@@$/);
+            if (cbMatch) {
+                htmlParts.push(codeBlocks[parseInt(cbMatch[1])]);
+                i++;
+                continue;
+            }
+
+            // Horizontal rule
+            if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+                htmlParts.push("<hr/>");
+                i++;
+                continue;
+            }
+
+            // Headings
+            const hMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
+            if (hMatch) {
+                const level = hMatch[1].length;
+                const sizes = [16, 14, 13, 12];
+                const sz = sizes[level - 1] || 12;
+                htmlParts.push(`<p style="font-size: ${sz}px; font-weight: bold; color: ${accentColor}; margin-top: 6px; margin-bottom: 3px;">${formatInline(hMatch[2], codeBg, linkColor)}</p>`);
+                i++;
+                continue;
+            }
+
+            // Markdown table
+            if (trimmed.startsWith("|") && i + 1 < lines.length && /^\|?[\s:-]+\|/.test(lines[i + 1].trim())) {
+                const parseRow = r => r.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim());
+                const headers = parseRow(trimmed);
+                i += 2; // skip header and separator
+                let tableHtml = `<table width="100%" cellspacing="1" cellpadding="5" style="background-color: ${tableBg}; margin-top: 6px; margin-bottom: 6px;">`;
+                tableHtml += `<tr style="background-color: ${headerBg};">` + headers.map(h => `<th align="left"><b>${formatInline(h, codeBg, linkColor)}</b></th>`).join("") + "</tr>";
+                while (i < lines.length && lines[i].trim().startsWith("|")) {
+                    const cols = parseRow(lines[i]);
+                    tableHtml += "<tr>" + cols.map(c => `<td>${formatInline(c, codeBg, linkColor)}</td>`).join("") + "</tr>";
+                    i++;
+                }
+                tableHtml += "</table>";
+                htmlParts.push(tableHtml);
+                continue;
+            }
+
+            // Blockquote
+            if (trimmed.startsWith(">")) {
+                const quoteLines = [];
+                while (i < lines.length && lines[i].trim().startsWith(">")) {
+                    quoteLines.push(lines[i].trim().replace(/^>\s?/, ""));
+                    i++;
+                }
+                htmlParts.push(`<table width="100%" cellspacing="0" cellpadding="6" style="background-color: ${tableBg}; margin-top: 4px; margin-bottom: 4px;"><tr><td style="font-style: italic;">${quoteLines.map(q => formatInline(q, codeBg, linkColor)).join("<br/>")}</td></tr></table>`);
+                continue;
+            }
+
+            // Unordered list
+            if (/^[-*+]\s+/.test(trimmed)) {
+                let listHtml = `<ul style="margin-top: 3px; margin-bottom: 3px; margin-left: -14px;">`;
+                while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+                    const item = lines[i].replace(/^\s*[-*+]\s+/, "");
+                    listHtml += `<li style="margin-bottom: 2px;">${formatInline(item, codeBg, linkColor)}</li>`;
+                    i++;
+                }
+                listHtml += "</ul>";
+                htmlParts.push(listHtml);
+                continue;
+            }
+
+            // Ordered list
+            if (/^\d+\.\s+/.test(trimmed)) {
+                let listHtml = `<ol style="margin-top: 3px; margin-bottom: 3px; margin-left: -14px;">`;
+                while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+                    const item = lines[i].replace(/^\s*\d+\.\s+/, "");
+                    listHtml += `<li style="margin-bottom: 2px;">${formatInline(item, codeBg, linkColor)}</li>`;
+                    i++;
+                }
+                listHtml += "</ol>";
+                htmlParts.push(listHtml);
+                continue;
+            }
+
+            // Normal paragraph
+            const paraLines = [];
+            while (i < lines.length) {
+                const cur = lines[i].trim();
+                if (!cur || /^@@CODEBLOCK_\d+@@$/.test(cur) || /^(#{1,4}\s+|[-*+]\s+|\d+\.\s+|>\s?|---|\*\*\*|\|)/.test(cur))
+                    break;
+                paraLines.push(formatInline(lines[i], codeBg, linkColor));
+                i++;
+            }
+            if (paraLines.length > 0)
+                htmlParts.push(`<p style="margin-top: 2px; margin-bottom: 4px;">${paraLines.join("<br/>")}</p>`);
+        }
+
+        return htmlParts.join("");
+    }
+
     function roleName(role: string): string {
         switch (role) {
         case "user":
@@ -453,18 +606,26 @@ Item {
                     StyledRect {
                         id: bubble
 
-                        width: msgWrap.isSystem ? parent.width : Math.min(parent.width * 0.9, parent.width - 28)
+                        property bool copied: false
+
+                        width: msgWrap.isSystem ? parent.width : Math.min(parent.width * 0.92, parent.width - 24)
                         anchors.right: msgWrap.isUser ? parent.right : undefined
                         anchors.left: msgWrap.isUser ? undefined : parent.left
                         implicitHeight: bubbleCol.implicitHeight + Tokens.padding.medium * 2
                         radius: Tokens.rounding.large
                         color: root.roleBg(msgWrap.modelData.role)
 
+                        Timer {
+                            id: copyResetTimer
+                            interval: 1500
+                            onTriggered: bubble.copied = false
+                        }
+
                         ColumnLayout {
                             id: bubbleCol
                             anchors.fill: parent
                             anchors.margins: Tokens.padding.medium
-                            spacing: Tokens.spacing.extraSmall
+                            spacing: Tokens.spacing.small
 
                             RowLayout {
                                 Layout.fillWidth: true
@@ -497,14 +658,42 @@ Item {
                                     font: Tokens.font.label.small
                                     color: Qt.alpha(root.roleFg(msgWrap.modelData.role), 0.65)
                                 }
+
+                                MouseArea {
+                                    id: copyBtn
+                                    implicitWidth: 20
+                                    implicitHeight: 20
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        Quickshell.clipboardText = msgWrap.modelData.text;
+                                        bubble.copied = true;
+                                        copyResetTimer.restart();
+                                    }
+
+                                    MaterialIcon {
+                                        anchors.centerIn: parent
+                                        text: bubble.copied ? "check" : "content_copy"
+                                        fontStyle: Tokens.font.icon.small
+                                        color: bubble.copied
+                                            ? Colours.palette.m3primary
+                                            : Qt.alpha(root.roleFg(msgWrap.modelData.role), copyBtn.containsMouse ? 0.95 : 0.55)
+                                    }
+                                }
                             }
 
-                            StyledText {
+                            TextEdit {
                                 Layout.fillWidth: true
-                                text: msgWrap.modelData.text
+                                readOnly: true
+                                selectByMouse: true
+                                textFormat: Text.RichText
+                                text: root.renderMarkdown(msgWrap.modelData.text, msgWrap.modelData.role)
                                 wrapMode: Text.WordWrap
-                                font: Tokens.font.body.small
+                                font: Tokens.font.body.medium
                                 color: root.roleFg(msgWrap.modelData.role)
+                                selectionColor: Colours.palette.m3primary
+                                selectedTextColor: Colours.palette.m3onPrimary
+                                onLinkActivated: link => Qt.openUrlExternally(link)
                             }
                         }
                     }
