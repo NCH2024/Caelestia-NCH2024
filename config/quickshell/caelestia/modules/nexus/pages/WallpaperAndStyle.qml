@@ -203,10 +203,48 @@ PageBase {
         ToggleRow {
             Layout.topMargin: Tokens.spacing.extraSmall / 2 - parent.spacing
 
-            last: true
             text: Tr.tr("Dark theme")
             checked: !Colours.light
             onToggled: Colours.setMode(checked ? "dark" : "light")
+        }
+
+        ToggleRow {
+            Layout.topMargin: Tokens.spacing.extraSmall / 2 - parent.spacing
+
+            text: Tr.tr("Liquid Glass & Water Optics")
+            subtext: Tr.tr("Refractive specular glass rims, animated water caustics & deep vibrancy blur")
+            checked: ExtraConfig.liquidGlassEnabled
+            onToggled: ExtraConfig.setLiquidGlass(checked)
+        }
+
+        ToggleRow {
+            Layout.topMargin: Tokens.spacing.extraSmall / 2 - parent.spacing
+
+            text: Tr.tr("Animated water caustics")
+            subtext: Tr.tr("Subtle fluid light dispersion shimmering across glass surfaces")
+            enabled: ExtraConfig.liquidGlassEnabled
+            checked: ExtraConfig.liquidGlassAnimate
+            onToggled: {
+                ExtraConfig.liquidGlassAnimate = checked;
+                ExtraConfig.save();
+            }
+        }
+
+        SliderRow {
+            Layout.topMargin: Tokens.spacing.extraSmall / 2 - parent.spacing
+
+            last: true
+            icon: "water_drop"
+            label: Tr.tr("Optical glass intensity")
+            valueLabel: `${Math.round(value * 100)}%`
+            from: 0.2
+            to: 1.0
+            enabled: ExtraConfig.liquidGlassEnabled
+            value: ExtraConfig.liquidGlassIntensity
+            onMoved: v => {
+                ExtraConfig.liquidGlassIntensity = Math.round(v * 100) / 100;
+                ExtraConfig.save();
+            }
         }
 
         // ---- Desktop Clock & Weather Widget ----------------------------------

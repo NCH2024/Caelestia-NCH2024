@@ -95,6 +95,12 @@ QtObject {
             description: Tr.tr("Weather location, units, time format"),
             category: "shell"
         },
+        {
+            label: Tr.tr("Keybinds & Shortcuts"),
+            icon: "keyboard",
+            description: Tr.tr("View system hotkeys & bind modes/commands"),
+            category: "shell"
+        },
 
         // About
         {

@@ -158,6 +158,30 @@ Scope {
     }
 
     IpcHandler {
+        function activate(modeId: string): void {
+            ExtraConfig.activateMode(modeId);
+        }
+
+        function cycle(): void {
+            ExtraConfig.cycleMode();
+        }
+
+        function toggleGaming(): void {
+            ExtraConfig.activateMode(ExtraConfig.activeModeId === "gaming" ? "standard" : "gaming");
+        }
+
+        function list(): string {
+            return ExtraConfig.modes.map(m => `${m.id}:${m.nameEn || m.name}`).join("\n");
+        }
+
+        function setLiquidGlass(on: bool): void {
+            ExtraConfig.setLiquidGlass(on);
+        }
+
+        target: "modes"
+    }
+
+    IpcHandler {
         function info(title: string, message: string, icon: string): void {
             Toaster.toast(title, message, icon, Toast.Info);
         }

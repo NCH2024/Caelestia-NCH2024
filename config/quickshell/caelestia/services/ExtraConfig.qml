@@ -22,6 +22,17 @@ Singleton {
     property string quickDnsPreset: "auto"
     property bool autoOptimizeRam: false
 
+    // Liquid Glass & Water Optical Effects
+    property bool liquidGlassEnabled: false
+    property real liquidGlassIntensity: 0.72
+    property bool liquidGlassAnimate: true
+    readonly property bool liquidGlassActive: liquidGlassEnabled && !GameMode.enabled && !_sleepSolidOverride && Colours.transparency.enabled
+
+    // Mode Switch Edge OSD State
+    property bool modeOsdVisible: false
+    property string modeOsdSubtitle: ""
+    signal modeOsdTriggered()
+
     // Left Bar Layout & Compact Active Window Options
     property bool barCompactWindow: true
     property bool barIconOnlyWindow: false
@@ -506,6 +517,65 @@ Singleton {
             Quickshell.execDetached(["bash", "-c", String(m.launchCmd).trim()]);
         }
 
+        const tags = [];
+        if (m.powerProfile === "performance")
+            tags.push("Max Speed");
+        else if (m.powerProfile === "power-saver")
+            tags.push("Power Saver");
+        else
+            tags.push("Balanced");
+        if (m.gameMode)
+            tags.push("Solid Game UI");
+        if (m.eqPreset)
+            tags.push(`EQ: ${m.eqPreset}`);
+        root.modeOsdSubtitle = tags.join(" • ");
+        if (root.loaded) {
+            root.modeOsdVisible = true;
+            modeOsdTimer.restart();
+            root.modeOsdTriggered();
+        }
+
+        if (root.liquidGlassEnabled && !wantGameMode && !wantSolidBattery)
+            Qt.callLater(() => applyLiquidGlassBlur(true));
+
+        save();
+    }
+
+    function applyLiquidGlassBlur(enabled: bool): void {
+        if (enabled && !GameMode.enabled && !root._sleepSolidOverride) {
+            Hypr.extras.applyOptions({
+                "decoration:blur:enabled": 1,
+                "decoration:blur:size": 14,
+                "decoration:blur:passes": 4,
+                "decoration:blur:vibrancy": 0.30,
+                "decoration:blur:vibrancy_darkness": 0.22,
+                "decoration:blur:contrast": 1.06,
+                "decoration:blur:brightness": 1.05,
+                "decoration:blur:noise": 0.015,
+                "decoration:blur:popups": 1
+            });
+        } else if (!GameMode.enabled && !root._sleepSolidOverride) {
+            Hypr.extras.applyOptions({
+                "decoration:blur:size": 8,
+                "decoration:blur:passes": 2,
+                "decoration:blur:vibrancy": 0.1696,
+                "decoration:blur:vibrancy_darkness": 0.0,
+                "decoration:blur:contrast": 1.0,
+                "decoration:blur:brightness": 1.0,
+                "decoration:blur:noise": 0.0117
+            });
+        }
+    }
+
+    function setLiquidGlass(enabled: bool): void {
+        root.liquidGlassEnabled = enabled;
+        if (enabled) {
+            if (!GameMode.enabled && !root._sleepSolidOverride)
+                GlobalConfig.appearance.transparency.enabled = true;
+            applyLiquidGlassBlur(true);
+        } else {
+            applyLiquidGlassBlur(false);
+        }
         save();
     }
 
@@ -903,6 +973,13 @@ print(json.dumps(out))
     }
 
     Timer {
+        id: modeOsdTimer
+
+        interval: 2600
+        onTriggered: root.modeOsdVisible = false
+    }
+
+    Timer {
         id: windowEvalTimer
 
         interval: 250
@@ -977,6 +1054,9 @@ print(json.dumps(out))
                 nightLightTemp: root.nightLightTemp,
                 quickDnsPreset: root.quickDnsPreset,
                 autoOptimizeRam: root.autoOptimizeRam,
+                liquidGlassEnabled: root.liquidGlassEnabled,
+                liquidGlassIntensity: root.liquidGlassIntensity,
+                liquidGlassAnimate: root.liquidGlassAnimate,
                 barCompactWindow: root.barCompactWindow,
                 barIconOnlyWindow: root.barIconOnlyWindow,
                 barShowModesBtn: root.barShowModesBtn,
@@ -1014,6 +1094,12 @@ print(json.dumps(out))
                     root.quickDnsPreset = String(data.quickDnsPreset);
                 if (data.autoOptimizeRam !== undefined)
                     root.autoOptimizeRam = Boolean(data.autoOptimizeRam);
+                if (data.liquidGlassEnabled !== undefined)
+                    root.liquidGlassEnabled = Boolean(data.liquidGlassEnabled);
+                if (data.liquidGlassIntensity !== undefined)
+                    root.liquidGlassIntensity = Math.max(0.2, Math.min(1.0, Number(data.liquidGlassIntensity) || 0.72));
+                if (data.liquidGlassAnimate !== undefined)
+                    root.liquidGlassAnimate = Boolean(data.liquidGlassAnimate);
                 if (data.barCompactWindow !== undefined)
                     root.barCompactWindow = Boolean(data.barCompactWindow);
                 if (data.barIconOnlyWindow !== undefined)

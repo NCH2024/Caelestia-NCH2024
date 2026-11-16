@@ -15,7 +15,7 @@ Item {
 
     property bool hovered
     readonly property Brightness.Monitor monitor: Brightness.getMonitorForScreen(root.screen)
-    readonly property bool shouldBeActive: screenState.osd && Config.osd.enabled && !(screenState.utilities && Config.utilities.enabled)
+    readonly property bool shouldBeActive: screenState.osd && Config.osd.enabled && (!(screenState.utilities && Config.utilities.enabled) || ExtraConfig.modeOsdVisible)
     property real offsetScale: shouldBeActive ? 0 : 1
     property real sidebarOffset: sidebarOrSessionVisible ? 12 : 0
 
@@ -79,6 +79,14 @@ Item {
         }
 
         target: root.monitor
+    }
+
+    Connections {
+        function onModeOsdTriggered(): void {
+            root.show();
+        }
+
+        target: ExtraConfig
     }
 
     Timer {

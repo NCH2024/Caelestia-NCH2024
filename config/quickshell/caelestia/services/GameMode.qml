@@ -42,6 +42,8 @@ Singleton {
                 props.solidOverrideActive = false;
             }
             Hypr.extras.message("reload");
+            if (ExtraConfig.liquidGlassEnabled && !ExtraConfig._sleepSolidOverride)
+                Qt.callLater(() => ExtraConfig.applyLiquidGlassBlur(true));
             if (GlobalConfig.utilities.toasts.gameModeChanged)
                 Toaster.toast(Tr.tr("Game mode disabled"), Tr.tr("Hyprland and transparency settings restored"), "gamepad");
         }

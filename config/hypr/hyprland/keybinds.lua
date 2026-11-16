@@ -77,6 +77,12 @@ end, locked)
 create_bind("CTRL + SUPER + SHIFT + R", hl.dsp.exec_cmd("caelestia shell -k"), release)
 create_bind("CTRL + SUPER + ALT + R", hl.dsp.exec_cmd("caelestia shell -r -d"), release)
 
+-- Modes & Quick Access
+create_bind("SUPER + ALT + M", hl.dsp.exec_cmd("qs -c caelestia ipc call modes cycle"), locked)
+create_bind("SUPER + ALT + G", hl.dsp.exec_cmd("qs -c caelestia ipc call modes toggleGaming"), locked)
+create_bind("SUPER + ALT + O", hl.dsp.exec_cmd("qs -c caelestia ipc call drawers openDashboardTab 3"))
+create_bind("SUPER + ALT + K", hl.dsp.exec_cmd("qs -c caelestia ipc call nexus openPage 13"))
+
 for i = 1, 10 do
     local key = i % 10 -- 10 maps to key 0
     create_bind(extend_keybind(vars.kbGoToWs, key), fn.wsaction("focus", "", i))

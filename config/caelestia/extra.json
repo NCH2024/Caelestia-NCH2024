@@ -3,9 +3,12 @@
     "desktopWeatherEnabled": true,
     "desktopWeatherDetails": true,
     "nightLightEnabled": false,
-    "nightLightTemp": 5500,
+    "nightLightTemp": 4500,
     "quickDnsPreset": "auto",
     "autoOptimizeRam": false,
+    "liquidGlassEnabled": true,
+    "liquidGlassIntensity": 0.72,
+    "liquidGlassAnimate": true,
     "barCompactWindow": true,
     "barIconOnlyWindow": false,
     "barShowModesBtn": false,
@@ -14,7 +17,7 @@
     "lockTimeoutSec": 180,
     "screenOffTimeoutSec": 300,
     "sleepTimeoutSec": 600,
-    "activeModeId": "standard",
+    "activeModeId": "gaming",
     "modes": [
         {
             "description": "Balanced power, quiet fans, and standard visual effects",
@@ -132,7 +135,9 @@
             "actionValue": "sleep",
             "enabled": true,
             "id": "routine_night_sleep",
+            "matchMode": "time",
             "name": "Night Eye Comfort & Power Saver",
+            "revertOnExit": true,
             "triggerLabel": "22:00 – 06:00",
             "triggerType": "time",
             "triggerValue": "22:00-06:00"
@@ -143,8 +148,10 @@
             "actionValue": "gaming",
             "enabled": true,
             "id": "routine_auto_gaming",
+            "matchMode": "window",
             "name": "Auto Gaming Mode on Steam / Games",
-            "triggerLabel": "App: steam, gamescope, cs2, dota2",
+            "revertOnExit": true,
+            "triggerLabel": "Window: steam, gamescope, cs2, dota2",
             "triggerType": "process",
             "triggerValue": "steam|gamescope|cs2|dota2"
         },
@@ -154,8 +161,10 @@
             "actionValue": "cinema",
             "enabled": false,
             "id": "routine_auto_cinema",
+            "matchMode": "window",
             "name": "Cinema Audio on MPV / VLC",
-            "triggerLabel": "App: mpv, vlc",
+            "revertOnExit": true,
+            "triggerLabel": "Window: mpv, vlc",
             "triggerType": "process",
             "triggerValue": "mpv|vlc"
         },
@@ -165,8 +174,10 @@
             "actionValue": "coding",
             "enabled": false,
             "id": "routine_auto_coding",
+            "matchMode": "window",
             "name": "Developer Mode on VS Code / Zed",
-            "triggerLabel": "App: code, nvim, zed",
+            "revertOnExit": true,
+            "triggerLabel": "Window: code, nvim, zed",
             "triggerType": "process",
             "triggerValue": "code|nvim|zed"
         }

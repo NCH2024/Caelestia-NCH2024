@@ -217,7 +217,16 @@ QtObject {
             }
         },
 
-        // 13: About
+        // 13: Keybinds & Shortcuts
+        Component {
+            StackPage {
+                Component {
+                    ShortcutsPage {}
+                }
+            }
+        },
+
+        // 14: About
         Component {
             StackPage {
                 Component {

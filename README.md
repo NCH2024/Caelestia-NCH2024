@@ -40,6 +40,12 @@
   - **CachyOS `sched-ext` & Kernel Tuning:** Switch live between `EEVDF`, `scx_lavd`, `scx_bpfland`, `scx_cosmos`, and `scx_rusty`, NVMe I/O scheduler, CPU Turbo Boost, and Auto-RAM Guard.
   - **Daemons, Timers & Disks:** Manage background systemd services, scheduled timers, top memory processes, partitions/`fstab`, Quick DNS (`1.1.1.1`, `8.8.8.8`, AdGuard), and Bluetooth codecs.
   - **Unified Branding & Login:** Matching Caelestia **SDDM theme**, hang-free logout (`hyprctl dispatch exit`), and **Caelestia × Meow** About page.
+- **Keybinds & Shortcuts Manager (`Keybinds & Shortcuts`):**
+  - Searchable overview of all active Hyprland & shell shortcuts plus a visual builder to bind custom hotkeys to **System Modes** (`SUPER + ALT + M` cycle mode, `SUPER + ALT + G` Gaming toggle), UI panels (`SUPER + ALT + O` Optimization, `SUPER + ALT + K` Keybinds), or custom commands (`hypr-user.lua` + live `hyprctl reload`).
+- **Right-Edge Mode Switch OSD:**
+  - Switching modes via hotkey or routine displays a crisp edge OSD pill right above the Volume/Brightness sliders (`WlrLayer.Overlay` — floats cleanly over normal and fullscreen windows).
+- **Liquid Glass & Water Optics (`Wallpaper & style`):**
+  - Real compiled Qt6 GLSL fragment shader (`liquid_glass.frag.qsb`) paired with Hyprland multi-pass vibrancy blur (`size 14`, `passes 4`), delivering curved Fresnel specular rims, subtle chromatic edge dispersion, and animated water caustic shimmer (automatically disabled for 0% overhead in Game Mode / Battery Saver).
 
 ---
 
@@ -94,6 +100,27 @@ Instant bottom-right control drawer synchronized 1:1 with Modes, Power Profiles,
 
 ---
 
+### Liquid Glass & Water Optics Shader
+Optional macOS-inspired optical glass mode (`Wallpaper & style → Liquid Glass & Water Optics`) using a compiled Qt6 GLSL fragment shader (`liquid_glass.frag.qsb`) for curved specular rims, chromatic dispersion, and animated water caustics.
+
+![Liquid Glass and Water Optics](assets/screenshots/liquid-glass.png)
+
+---
+
+### Edge Mode Switch OSD (Overrides Fullscreen)
+Switching modes via keyboard shortcuts (`SUPER + ALT + M` / `SUPER + ALT + G`) or routines reveals a right-edge OSD overlay right alongside Volume & Brightness sliders over all windows.
+
+![Mode Switch Edge OSD](assets/screenshots/mode-osd.png)
+
+---
+
+### Keybinds & Shortcuts Manager
+Search all active Hyprland hotkeys or visually create custom shortcuts mapped to System Modes, panels, or shell commands (`hypr-user.lua`).
+
+![Keybinds and Shortcuts](assets/screenshots/nexus-shortcuts.png)
+
+---
+
 ### 10-Band Studio Equalizer
 PipeWire 10-band DSP filter chain (`caelestia-eq.service`) with 10 instant presets, Bass/Treble boost, volume overdrive up to `150%`, channel balance, and mic noise cancellation.
 
@@ -121,7 +148,7 @@ sudo pacman -S --needed \
 sudo pacman -S --needed scx-scheds scx-tools
 ```
 
-> On standard Arch/EndeavourOS, install `quickshell-git` and `caelestia-cli` via AUR (`paru -S quickshell-git caelestia-cli`).
+> On standard Arch/EndeavourOS, install `quickshell-git` and `caelestia-cli` via AUR (`paru -S quickshell-git caelestia-cli`). Precompiled `.frag.qsb` shader binaries are included; `qt6-shadertools` (`qsb`) is only needed if you modify `assets/shaders/liquid_glass.frag`.
 
 ---
 
@@ -185,12 +212,16 @@ Tuned on a **Dell G15 5515 (`AMD Ryzen 5 5600H` + `NVIDIA RTX 3050` + `NVMe`)** 
 caelestia shell -l
 
 # Open drawers or Nexus pages directly via CLI / keybinds
+qs -c caelestia ipc call modes cycle                  # Cycle Modes (with Edge OSD)
+qs -c caelestia ipc call modes toggleGaming           # Toggle Gaming & Turbo (with Edge OSD)
+qs -c caelestia ipc call modes setLiquidGlass true    # Enable Liquid Glass & Water Optics
 qs -c caelestia ipc call drawers openDashboardTab 3   # Top Optimization Tab
 qs -c caelestia ipc call nexus openPage 0            # Modes & Routines
 qs -c caelestia ipc call nexus openPage 1            # Power, Fans & Care
 qs -c caelestia ipc call nexus openPage 5            # Audio & Studio Equalizer
 qs -c caelestia ipc call nexus openPage 7            # Updates & Drivers
-qs -c caelestia ipc call nexus openPage 13           # About (Caelestia × Meow)
+qs -c caelestia ipc call nexus openPage 13           # Keybinds & Shortcuts
+qs -c caelestia ipc call nexus openPage 14           # About (Caelestia × Meow)
 
 # Uninstall system helpers
 ./uninstall.sh
