@@ -545,13 +545,13 @@ Singleton {
         if (enabled && !GameMode.enabled && !root._sleepSolidOverride) {
             Hypr.extras.applyOptions({
                 "decoration:blur:enabled": 1,
-                "decoration:blur:size": 14,
+                "decoration:blur:size": 16,
                 "decoration:blur:passes": 4,
-                "decoration:blur:vibrancy": 0.30,
-                "decoration:blur:vibrancy_darkness": 0.22,
-                "decoration:blur:contrast": 1.06,
+                "decoration:blur:vibrancy": 0.36,
+                "decoration:blur:vibrancy_darkness": 0.18,
+                "decoration:blur:contrast": 1.07,
                 "decoration:blur:brightness": 1.05,
-                "decoration:blur:noise": 0.015,
+                "decoration:blur:noise": 0.006,
                 "decoration:blur:popups": 1
             });
         } else if (!GameMode.enabled && !root._sleepSolidOverride) {
@@ -1156,6 +1156,8 @@ print(json.dumps(out))
                 }
             } catch (e) {}
             root.loaded = true;
+            if (root.liquidGlassEnabled && !GameMode.enabled)
+                Qt.callLater(() => root.applyLiquidGlassBlur(true));
             Qt.callLater(() => saveTimer.restart());
         }
         onLoadFailed: err => {

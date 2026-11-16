@@ -6,7 +6,6 @@ import Caelestia
 import Caelestia.Config
 import qs.components
 import qs.components.controls
-import qs.components.effects
 import qs.services
 import qs.utils
 
@@ -22,7 +21,17 @@ Item {
     required property bool sourceMuted
     required property real brightness
 
-    implicitWidth: Math.max(layout.implicitWidth, modeOsdCard.visible ? modeOsdCard.implicitWidth : 0) + Tokens.padding.large + layout.anchors.horizontalCenterOffset * 2
+    readonly property string shortModeTag: {
+        const id = ExtraConfig.activeModeId;
+        if (id === "gaming") return "GAME";
+        if (id === "work") return "WORK";
+        if (id === "coding") return "DEV";
+        if (id === "cinema") return "CINE";
+        if (id === "sleep") return "ECO";
+        return "BAL";
+    }
+
+    implicitWidth: layout.implicitWidth + Tokens.padding.large + layout.anchors.horizontalCenterOffset * 2
     implicitHeight: layout.implicitHeight + Tokens.padding.large * 2
 
     ColumnLayout {
@@ -32,51 +41,39 @@ Item {
         anchors.horizontalCenterOffset: CUtils.clamp(Tokens.padding.large - Config.border.thickness, 0, Tokens.padding.large) / 2
         spacing: Tokens.spacing.medium
 
-        // Mode Switch Edge OSD Pill (shown when switching modes via shortcut or routine)
+        // Slim vertical Mode Switch Pill matching exact width of Volume/Brightness sliders
         StyledRect {
             id: modeOsdCard
 
             visible: ExtraConfig.modeOsdVisible
-            Layout.alignment: Qt.AlignRight
-            implicitWidth: modeOsdRow.implicitWidth + Tokens.padding.medium * 2
-            implicitHeight: modeOsdRow.implicitHeight + Tokens.padding.small * 2
-            radius: Tokens.rounding.large
+            Layout.alignment: Qt.AlignHCenter
+            implicitWidth: Tokens.sizes.osd.sliderWidth
+            implicitHeight: modeOsdCol.implicitHeight + Tokens.padding.small * 2
+            radius: Tokens.rounding.full
             color: Colours.palette.m3primaryContainer
-            clip: true
 
-            LiquidGlassOverlay {
-                radius: parent.radius
-            }
-
-            RowLayout {
-                id: modeOsdRow
+            ColumnLayout {
+                id: modeOsdCol
 
                 anchors.centerIn: parent
-                spacing: Tokens.spacing.small
+                width: parent.width - 2
+                spacing: 2
 
                 MaterialIcon {
+                    Layout.alignment: Qt.AlignHCenter
                     text: ExtraConfig.activeModeIcon
                     color: Colours.palette.m3onPrimaryContainer
                     fontStyle: Tokens.font.icon.medium
                     fill: 1
                 }
 
-                ColumnLayout {
-                    spacing: 0
-
-                    StyledText {
-                        text: ExtraConfig.activeModeName
-                        color: Colours.palette.m3onPrimaryContainer
-                        font: Tokens.font.label.large
-                    }
-
-                    StyledText {
-                        visible: ExtraConfig.modeOsdSubtitle.length > 0
-                        text: ExtraConfig.modeOsdSubtitle
-                        color: Colours.palette.m3onPrimaryContainer
-                        opacity: 0.8
-                        font: Tokens.font.label.small
-                    }
+                StyledText {
+                    Layout.alignment: Qt.AlignHCenter
+                    text: root.shortModeTag
+                    color: Colours.palette.m3onPrimaryContainer
+                    font.pixelSize: 8
+                    font.weight: Font.Bold
+                    font.letterSpacing: 0.3
                 }
             }
         }

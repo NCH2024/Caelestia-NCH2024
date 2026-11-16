@@ -44,8 +44,8 @@
   - Searchable overview of all active Hyprland & shell shortcuts plus a visual builder to bind custom hotkeys to **System Modes** (`SUPER + ALT + M` cycle mode, `SUPER + ALT + G` Gaming toggle), UI panels (`SUPER + ALT + O` Optimization, `SUPER + ALT + K` Keybinds), or custom commands (`hypr-user.lua` + live `hyprctl reload`).
 - **Right-Edge Mode Switch OSD:**
   - Switching modes via hotkey or routine displays a crisp edge OSD pill right above the Volume/Brightness sliders (`WlrLayer.Overlay` — floats cleanly over normal and fullscreen windows).
-- **Liquid Glass & Water Optics (`Wallpaper & style`):**
-  - Real compiled Qt6 GLSL fragment shader (`liquid_glass.frag.qsb`) paired with Hyprland multi-pass vibrancy blur (`size 14`, `passes 4`), delivering curved Fresnel specular rims, subtle chromatic edge dispersion, and animated water caustic shimmer (automatically disabled for 0% overhead in Game Mode / Battery Saver).
+- **Apple-Style Liquid Glass (`Wallpaper & style`):**
+  - Compiled Qt6 GLSL Fresnel optical shader (`liquid_glass.frag.qsb`) applied globally across `StyledRect` cards and panels, paired with Hyprland multi-pass vibrancy blur (`size 16`, `passes 4`, `vibrancy 0.36`) for subtle curved specular rims and crystal-clear glass depth (automatically disabled for 0% overhead in Game Mode / Battery Saver).
 
 ---
 
@@ -100,15 +100,15 @@ Instant bottom-right control drawer synchronized 1:1 with Modes, Power Profiles,
 
 ---
 
-### Liquid Glass & Water Optics Shader
-Optional macOS-inspired optical glass mode (`Wallpaper & style → Liquid Glass & Water Optics`) using a compiled Qt6 GLSL fragment shader (`liquid_glass.frag.qsb`) for curved specular rims, chromatic dispersion, and animated water caustics.
+### Apple-Style Liquid Glass (Global Optical Rim & Vibrancy)
+Optional macOS-inspired optical glass mode (`Wallpaper & style → Liquid Glass`) using a global compiled Qt6 GLSL shader (`liquid_glass.frag.qsb`) on rounded cards and surfaces for curved directional specular rims and deep frosted backdrop vibrancy blur.
 
-![Liquid Glass and Water Optics](assets/screenshots/liquid-glass.png)
+![Liquid Glass Optical Rim and Vibrancy](assets/screenshots/liquid-glass.png)
 
 ---
 
 ### Edge Mode Switch OSD (Overrides Fullscreen)
-Switching modes via keyboard shortcuts (`SUPER + ALT + M` / `SUPER + ALT + G`) or routines reveals a right-edge OSD overlay right alongside Volume & Brightness sliders over all windows.
+Switching modes via keyboard shortcuts (`SUPER + ALT + M` / `SUPER + ALT + G`) or routines shows a slim vertical Mode Pill right at the Volume & Brightness edge bar (`WlrLayer.Overlay` over normal & fullscreen windows).
 
 ![Mode Switch Edge OSD](assets/screenshots/mode-osd.png)
 

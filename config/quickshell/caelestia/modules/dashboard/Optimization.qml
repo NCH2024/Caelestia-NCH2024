@@ -6,7 +6,6 @@ import Caelestia.Config
 import Caelestia.I18n
 import qs.components
 import qs.components.controls
-import qs.components.effects
 import qs.services
 import qs.utils
 import qs.modules.nexus
@@ -60,10 +59,6 @@ Item {
                 radius: Tokens.rounding.extraLarge
                 color: Colours.tPalette.m3surfaceContainer
                 clip: true
-
-                LiquidGlassOverlay {
-                    radius: parent.radius
-                }
 
                 ColumnLayout {
                     id: boostCol
@@ -259,10 +254,6 @@ Item {
                 color: Colours.tPalette.m3surfaceContainer
                 clip: true
 
-                LiquidGlassOverlay {
-                    radius: parent.radius
-                }
-
                 ColumnLayout {
                     id: modeCol
 
@@ -444,10 +435,6 @@ Item {
                 color: Colours.tPalette.m3surfaceContainer
                 clip: true
 
-                LiquidGlassOverlay {
-                    radius: parent.radius
-                }
-
                 ColumnLayout {
                     id: careCol
 
@@ -595,10 +582,6 @@ Item {
                 radius: Tokens.rounding.extraLarge
                 color: Colours.tPalette.m3surfaceContainer
                 clip: true
-
-                LiquidGlassOverlay {
-                    radius: parent.radius
-                }
 
                 ColumnLayout {
                     id: appsCol

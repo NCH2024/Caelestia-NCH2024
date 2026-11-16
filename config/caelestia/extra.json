@@ -7,7 +7,7 @@
     "quickDnsPreset": "auto",
     "autoOptimizeRam": false,
     "liquidGlassEnabled": true,
-    "liquidGlassIntensity": 0.72,
+    "liquidGlassIntensity": 0.9,
     "liquidGlassAnimate": true,
     "barCompactWindow": true,
     "barIconOnlyWindow": false,
@@ -17,7 +17,7 @@
     "lockTimeoutSec": 180,
     "screenOffTimeoutSec": 300,
     "sleepTimeoutSec": 600,
-    "activeModeId": "gaming",
+    "activeModeId": "standard",
     "modes": [
         {
             "description": "Balanced power, quiet fans, and standard visual effects",

@@ -8,7 +8,6 @@ import Caelestia.Config
 import Caelestia.I18n
 import qs.components
 import qs.components.controls
-import qs.components.effects
 import qs.services
 import qs.utils
 import qs.modules.nexus
@@ -57,10 +56,6 @@ StyledRect {
     radius: Tokens.rounding.large
     color: Colours.tPalette.m3surfaceContainer
     clip: true
-
-    LiquidGlassOverlay {
-        radius: parent.radius
-    }
 
     ColumnLayout {
         id: layout
