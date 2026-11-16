@@ -644,8 +644,8 @@ def detect_office_app() -> tuple[str | None, list[str] | None, bool]:
     """Return (binary_name, launch_cmd, is_word_processor) prioritized for OS-compatible Word/Office apps."""
     import shutil
     candidates = [
-        ("lowriter", ["lowriter"], True),
-        ("libreoffice", ["libreoffice", "--writer"], True),
+        ("lowriter", ["lowriter", "--nologo", "--norestore"], True),
+        ("libreoffice", ["libreoffice", "--writer", "--nologo", "--norestore"], True),
         ("onlyoffice-desktopeditors", ["onlyoffice-desktopeditors"], True),
         ("wps", ["wps"], True),
         ("abiword", ["abiword"], True),
@@ -670,7 +670,7 @@ def _build_docx_file(out_path: Path, title: str, body_text: str) -> int:
         paras.append(
             '<w:p><w:pPr><w:spacing w:before="0" w:after="120"/>'
             '<w:pBdr><w:bottom w:val="single" w:sz="12" w:space="6" w:color="1D4ED8"/></w:pBdr></w:pPr>'
-            '<w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:b/><w:color w:val="1E3A8A"/><w:sz w:val="38"/></w:rPr>'
+            '<w:r><w:rPr><w:rFonts w:ascii="Noto Sans" w:hAnsi="Noto Sans"/><w:b/><w:color w:val="1E3A8A"/><w:sz w:val="38"/></w:rPr>'
             f'<w:t xml:space="preserve">{escape(title)}</w:t></w:r></w:p>'
         )
 
@@ -685,7 +685,7 @@ def _build_docx_file(out_path: Path, title: str, body_text: str) -> int:
             val = tok[2:-2] if is_b else tok
             b_xml = "<w:b/>" if is_b else ""
             runs.append(
-                f'<w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>{b_xml}'
+                f'<w:r><w:rPr><w:rFonts w:ascii="Noto Sans" w:hAnsi="Noto Sans"/>{b_xml}'
                 f'<w:color w:val="{base_col}"/><w:sz w:val="{base_sz}"/></w:rPr>'
                 f'<w:t xml:space="preserve">{escape(val)}</w:t></w:r>'
             )
@@ -724,7 +724,7 @@ def _build_docx_file(out_path: Path, title: str, body_text: str) -> int:
             paras.append(
                 '<w:p><w:pPr><w:spacing w:after="80" w:line="276" w:lineRule="auto"/>'
                 '<w:ind w:left="360" w:hanging="180"/></w:pPr>'
-                '<w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:b/><w:color w:val="2563EB"/><w:sz w:val="22"/></w:rPr>'
+                '<w:r><w:rPr><w:rFonts w:ascii="Noto Sans" w:hAnsi="Noto Sans"/><w:b/><w:color w:val="2563EB"/><w:sz w:val="22"/></w:rPr>'
                 '<w:t xml:space="preserve">• </w:t></w:r>'
                 + render_inline_runs(bullet_body, base_sz=22, base_col="1F2937")
                 + "</w:p>"
@@ -948,12 +948,23 @@ def cmd_office_paste(args):
         launch_cmd.append(saved_docx)
     subprocess.Popen(launch_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
-    # Wait for window to appear cleanly
+    # Wait for the real document editor window (skip splash screens / Welcome dialogs!)
     win = None
-    match_token = "libreoffice" if "libreoffice" in app_name or app_name == "lowriter" else app_name
-    deadline = time.time() + 6.5
+    match_token = "libreoffice-writer" if ("libreoffice" in app_name or app_name == "lowriter") else app_name
+    deadline = time.time() + 8.0
     while time.time() < deadline:
-        win = find_client(match_token)
+        res_c = run(["hyprctl", "clients", "-j"])
+        try:
+            clients = json.loads(res_c.stdout)
+            for c in clients:
+                cls = str(c.get("class", "")).lower()
+                ttl = str(c.get("title", "")).lower()
+                sz = c.get("size") or [0, 0]
+                if sz[0] >= 750 and "welcome" not in ttl and (match_token in cls or match_token.split("-")[0] in ttl):
+                    win = c
+                    break
+        except Exception:
+            pass
         if win:
             break
         time.sleep(0.35)
@@ -961,15 +972,19 @@ def cmd_office_paste(args):
     pasted = False
     if win:
         with pointer_lock():
-            hypr_focus(match_token)
+            hypr_focus(win["address"])
             time.sleep(0.35)
             cx = int(win["at"][0] + win["size"][0] / 2)
             cy = int(win["at"][1] + win["size"][1] / 2)
-            ax, ay = calibrated_move(cx, cy, f"Dán vào {app_name}", args.agent)
-            notify_hud(ax, ay, "click", "Chọn vùng soạn thảo", True, args.agent)
+            ax, ay = calibrated_move(cx, cy, f"Mở & soạn thảo ({app_name})", args.agent)
+            notify_hud(ax, ay, "click", "Chọn trang văn bản", True, args.agent)
             run(["ydotool", "click", BUTTON_CODES["left"]])
-            time.sleep(0.12)
-            if not (is_wp and saved_docx):
+            time.sleep(0.15)
+            if is_wp and saved_docx:
+                # Scroll gently to show styled LibreOffice Writer pages visibly
+                notify_hud(ax, ay, "scroll", "Xem bố cục Word", False, args.agent)
+                run(["ydotool", "mousemove", "-w", "-x", "0", "-y", "-2"])
+            else:
                 wl_copy_safe(clip)
                 time.sleep(0.08)
                 notify_hud(ax, ay, "key", "Dán nội dung (Ctrl+V)", False, args.agent)
