@@ -49,7 +49,7 @@ if (( INSTALL_PKGS == 1 )); then
         hyprland quickshell-git caelestia-cli \
         power-profiles-daemon pipewire wireplumber \
         ananicy-cpp pacman-contrib bluez networkmanager \
-        sddm qt6-5compat grim foot ydotool python || true
+        sddm qt6-5compat grim foot ydotool python python-pillow tesseract wl-clipboard || true
     if pacman -Si scx-scheds scx-tools >/dev/null 2>&1; then
         sudo pacman -S --needed --noconfirm scx-scheds scx-tools || true
     fi
@@ -98,6 +98,8 @@ fi
 echo "[4/5] Installing hardware telemetry & optimizer CLI helpers (/usr/local/bin)..."
 sudo install -m 0755 "$REPO_DIR/bin/caelestia-optimize" /usr/local/bin/caelestia-optimize
 sudo install -m 0755 "$REPO_DIR/bin/caelestia-telemetry" /usr/local/bin/caelestia-telemetry
+mkdir -p "$HOME/.local/bin"
+ln -sf "$HOME/.config/quickshell/caelestia/scripts/desktop_ctl.py" "$HOME/.local/bin/caelestia-desktop"
 
 if (( WITH_SDDM == 1 )); then
     echo "[Optional] Installing Caelestia SDDM login theme..."

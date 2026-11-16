@@ -19,6 +19,7 @@ Singleton {
     property bool checkingCli: false
     property bool ydotoolActive: false
     property var availableModels: []
+    property var modelCooldowns: ({})
 
     // Persisted settings
     property bool enabled: true
@@ -65,6 +66,50 @@ Singleton {
 
     function trChat(viStr: string, enStr: string): string {
         return isVi() ? viStr : enStr;
+    }
+
+    function refreshCooldowns(): void {
+        cooldownFile.reload();
+    }
+
+    function cooldownSecondsLeft(modelId: string): int {
+        const entry = modelCooldowns ? modelCooldowns[modelId] : null;
+        if (!entry || !entry.until)
+            return 0;
+        const left = Math.floor(Number(entry.until) - (Date.now() / 1000));
+        return left > 0 ? left : 0;
+    }
+
+    function cooldownLabel(modelId: string): string {
+        const sec = cooldownSecondsLeft(modelId);
+        if (sec <= 0)
+            return "Ready";
+        const h = Math.floor(sec / 3600);
+        const m = Math.floor((sec % 3600) / 60);
+        if (h >= 24) {
+            const d = Math.floor(h / 24);
+            const rh = h % 24;
+            return `Cooldown ${d}d ${rh}h`;
+        }
+        if (h > 0)
+            return `Cooldown ${h}h ${m}m`;
+        return `Cooldown ${Math.max(1, m)}m`;
+    }
+
+    function hasActiveCooldowns(): bool {
+        if (!modelCooldowns)
+            return false;
+        const keys = Object.keys(modelCooldowns);
+        for (const k of keys) {
+            if (cooldownSecondsLeft(k) > 0)
+                return true;
+        }
+        return false;
+    }
+
+    function clearModelCooldowns(): void {
+        modelCooldowns = ({});
+        clearCooldownProc.running = true;
     }
 
     function nowStamp(): string {
@@ -315,6 +360,7 @@ Singleton {
             });
             liveSteps = nextSteps;
         } else if (t === "model_switch") {
+            refreshCooldowns();
             const msg = trChat(
                 `Model ${ev.fromModel} đã hết hạn mức. Tự động chuyển sang ${ev.toModel}.`,
                 `Quota/rate limit reached on ${ev.fromModel}. Auto-switched to ${ev.toModel}.`
@@ -436,6 +482,7 @@ Singleton {
         }
         onExited: exitCode => {
             killTimer.stop();
+            root.refreshCooldowns();
             if (root.running) {
                 root.running = false;
                 if (root.currentPhase !== "done" && root.currentPhase !== "error") {
@@ -500,7 +547,7 @@ Singleton {
 
     Process {
         id: authProbeProc
-        command: ["bash", "-c", "export PATH=\"$HOME/.local/bin:$PATH\"; agy -p \"Reply with OK\" --output-format json --model gemini-3.8-flash-low --dangerously-skip-permissions"]
+        command: ["bash", "-c", "export PATH=\"$HOME/.local/bin:$PATH\"; agy -p \"Reply with OK\" --output-format json --model gemini-4-hydrogen-low --dangerously-skip-permissions 2>&1"]
         stdout: StdioCollector {
             onStreamFinished: {
                 const t = text.trim();
@@ -508,7 +555,7 @@ Singleton {
                 if (lower.includes("not logged") || lower.includes("sign in") || lower.includes("unauthorized")) {
                     root.authStatus = "unauthenticated";
                     root.authDetail = "Login required — click Sign In to authenticate.";
-                } else if (t.includes("\"SUCCESS\"") || t.includes("OK")) {
+                } else if (t.includes("\"SUCCESS\"") || t.includes("OK") || lower.includes("resource_exhausted") || lower.includes("429") || lower.includes("quota")) {
                     root.authStatus = "authenticated";
                     root.authDetail = `Ready (${root.availableModels.length} models discovered)`;
                 } else {
@@ -522,6 +569,27 @@ Singleton {
                 root.authStatus = "unauthenticated";
                 root.authDetail = `Verification failed (exit ${exitCode}) — try signing in.`;
             }
+        }
+    }
+
+    Process {
+        id: clearCooldownProc
+        command: ["rm", "-f", `${Paths.cache}/ai_model_cooldowns.json`]
+    }
+
+    FileView {
+        id: cooldownFile
+        path: `${Paths.cache}/ai_model_cooldowns.json`
+        onLoaded: {
+            try {
+                const raw = JSON.parse(text());
+                root.modelCooldowns = (raw && typeof raw === "object") ? raw : ({});
+            } catch (e) {
+                root.modelCooldowns = ({});
+            }
+        }
+        onLoadFailed: {
+            root.modelCooldowns = ({});
         }
     }
 

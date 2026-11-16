@@ -13,7 +13,10 @@ Singleton {
 
     function create(parent: Item, props: var): void {
         if (root.activeWindow) {
-            Quickshell.execDetached(["hyprctl", "dispatch", "focuswindow", "title:^(Meow AI — ).*"]);
+            Quickshell.execDetached([
+                "bash", "-c",
+                "hyprctl dispatch 'hl.dsp.window.focus({ window = \"title:^(Meow AI).*\" })' >/dev/null 2>&1 || hyprctl dispatch focuswindow 'title:^(Meow AI).*' >/dev/null 2>&1 || true"
+            ]);
             return;
         }
         root.activeWindow = aiWinComp.createObject(parent ?? dummy, props ?? {});

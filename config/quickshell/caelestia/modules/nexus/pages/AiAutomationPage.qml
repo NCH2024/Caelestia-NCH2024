@@ -173,6 +173,14 @@ PageBase {
                         type: IconTextButton.Filled
                         onClicked: AiWindowFactory.create()
                     }
+
+                    IconTextButton {
+                        visible: AiAutomationService.hasActiveCooldowns()
+                        icon: "restart_alt"
+                        text: "Reset Quota Cooldowns"
+                        type: IconTextButton.Tonal
+                        onClicked: AiAutomationService.clearModelCooldowns()
+                    }
                 }
 
                 // Inline test / quick launch box
@@ -366,6 +374,23 @@ PageBase {
                                     color: Colours.palette.m3outline
                                     elide: Text.ElideRight
                                     Layout.fillWidth: true
+                                }
+                            }
+
+                            StyledRect {
+                                id: cdBadge
+                                readonly property bool cooled: AiAutomationService.cooldownSecondsLeft(modRow.modelData.id) > 0
+                                implicitWidth: cdTxt.implicitWidth + Tokens.padding.medium
+                                implicitHeight: 22
+                                radius: Tokens.rounding.full
+                                color: cooled ? Colours.palette.m3errorContainer : Colours.palette.m3tertiaryContainer
+
+                                StyledText {
+                                    id: cdTxt
+                                    anchors.centerIn: parent
+                                    text: AiAutomationService.cooldownLabel(modRow.modelData.id)
+                                    font: Tokens.font.label.small
+                                    color: cdBadge.cooled ? Colours.palette.m3onErrorContainer : Colours.palette.m3onTertiaryContainer
                                 }
                             }
 

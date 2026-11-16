@@ -344,7 +344,10 @@ Item {
                     inactiveOnColour: root.pinned ? Colours.palette.m3primary : Colours.palette.m3onSurfaceVariant
                     onClicked: {
                         root.pinned = !root.pinned;
-                        Quickshell.execDetached(["hyprctl", "dispatch", "pin", "title:^(Meow AI — ).*"]);
+                        Quickshell.execDetached([
+                            "bash", "-c",
+                            "hyprctl dispatch 'hl.dsp.window.pin({ window = \"title:^(Meow AI).*\" })' >/dev/null 2>&1 || hyprctl dispatch pin 'title:^(Meow AI).*' >/dev/null 2>&1 || true"
+                        ]);
                     }
                 }
 

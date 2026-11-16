@@ -2,16 +2,19 @@
 """
 Caelestia AI Task Automation Orchestrator.
 
-Flow:
-1. Primary Coordinator triages the user's request:
-   - "direct": Simple Q&A / explanation -> answers directly in 1 turn without spawning workers.
-   - "delegate": Complex or actionable task -> dynamically allocates 1..4 Collaborators
-     (e.g. B, C, D, E equivalents scaled to task size/complexity) in parallel/sequential order.
-2. Collaborators execute silently in background with full tool & desktop permissions
-   while emitting concise live milestone progress into the Chat UI.
-3. Primary Coordinator independently verifies collaborator outputs and synthesizes ONE
-   clean final response directly to the user (never dumping raw collaborator logs to chat),
-   or asks confirmation if verification detects an issue.
+Key capabilities:
+1. Persistent Quota Cooldown Cache (~/.cache/caelestia/ai_model_cooldowns.json):
+   Parses reset times (`Resets in XhYmZs`) on 429/RESOURCE_EXHAUSTED so exhausted
+   models are immediately skipped across threads and future requests (zero 429 thrashing).
+2. Smart Triage (`direct` vs `delegate`):
+   - `direct`: Simple Q&A -> Coordinator replies immediately without spawning workers.
+   - `delegate`: Scales 1..4 specialists dynamically (parallel or sequential).
+3. Autonomous Polish-Until-Verified Loop:
+   Coordinator audits collaborator work as `complete`, `needs_polish` (auto-fixes up to 2 passes),
+   or `needs_user_input` (asks confirmation inline in Chat), then synthesizes ONE clean reply.
+4. Pixel-Accurate Desktop Computer-Use Bridge (`caelestia-desktop`):
+   Supports GUI workflows across browsers and desktop apps with grid screenshots, calibrated
+   cursor clicks, UTF-8/Vietnamese typing, hotkeys, and OCR.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -22,6 +25,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -31,12 +35,18 @@ QUOTA_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+RESET_DURATION_RE = re.compile(
+    r"resets?\s+in\s+(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?",
+    re.IGNORECASE,
+)
+
 AUTH_PATTERNS = re.compile(
     r"(not logged into antigravity|authentication required|unauthenticated|"
     r"unauthorized|please log in|sign in required)",
     re.IGNORECASE,
 )
 
+COOLDOWN_PATH = Path.home() / ".cache" / "caelestia" / "ai_model_cooldowns.json"
 _EMIT_LOCK = threading.Lock()
 
 
@@ -45,6 +55,80 @@ def emit(event_type: str, **payload):
     with _EMIT_LOCK:
         sys.stdout.write(json.dumps(msg, ensure_ascii=False) + "\n")
         sys.stdout.flush()
+
+
+def parse_reset_seconds(text: str) -> int:
+    m = RESET_DURATION_RE.search(text or "")
+    if not m:
+        return 1800  # 30 minutes default cooldown on unspecified rate limit
+    days = int(m.group(1) or 0)
+    hours = int(m.group(2) or 0)
+    mins = int(m.group(3) or 0)
+    secs = int(m.group(4) or 0)
+    total = days * 86400 + hours * 3600 + mins * 60 + secs
+    return max(120, total)
+
+
+def format_duration(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, _ = divmod(rem, 60)
+    if h >= 24:
+        d, rh = divmod(h, 24)
+        return f"{d}d {rh}h"
+    if h > 0:
+        return f"{h}h {m}m"
+    return f"{max(1, m)}m"
+
+
+class CooldownStore:
+    def __init__(self, path: Path = COOLDOWN_PATH):
+        self.path = path
+        self._lock = threading.Lock()
+        self.data = self._load()
+
+    def _load(self) -> dict:
+        try:
+            if self.path.exists():
+                raw = json.loads(self.path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    now = time.time()
+                    return {k: v for k, v in raw.items() if isinstance(v, dict) and float(v.get("until", 0)) > now}
+        except Exception:
+            pass
+        return {}
+
+    def _save(self):
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def is_cooled_down(self, model: str) -> tuple[bool, int]:
+        with self._lock:
+            entry = self.data.get(model)
+            if not entry:
+                return False, 0
+            rem = int(float(entry.get("until", 0)) - time.time())
+            if rem <= 0:
+                self.data.pop(model, None)
+                self._save()
+                return False, 0
+            return True, rem
+
+    def mark_exhausted(self, model: str, err_text: str):
+        sec = parse_reset_seconds(err_text)
+        until = time.time() + sec
+        with self._lock:
+            prev = self.data.get(model, {}).get("until", 0)
+            if until > prev:
+                self.data[model] = {
+                    "until": until,
+                    "reason": err_text[:180],
+                    "marked_at": int(time.time()),
+                }
+                self._save()
 
 
 class SessionLogger:
@@ -100,14 +184,16 @@ class Orchestrator:
     def __init__(self, config: dict, log_path: str):
         self.cfg = config
         self.logger = SessionLogger(log_path)
+        self.cooldowns = CooldownStore()
         self.inbox = queue.Queue()
         self.stop_requested = False
         self.active_procs = set()
         self.proc_lock = threading.Lock()
         self.model_lock = threading.Lock()
+        self.reported_switches = set()
 
         self.supervisor_model = config.get("supervisorModel", "") or "gemini-4-hydrogen-high"
-        self.worker_model = config.get("workerModel", "") or "gemini-4-argon-high"
+        self.worker_model = config.get("workerModel", "") or "gemini-4-hydrogen-medium"
         self.fallback_models = [
             m for m in config.get("fallbackModels", []) if isinstance(m, str) and m.strip()
         ]
@@ -178,37 +264,82 @@ class Orchestrator:
         t = threading.Thread(target=reader, daemon=True)
         t.start()
 
-    def pick_next_model(self, failed_model: str, tried: set) -> str | None:
-        candidates = list(self.fallback_models) + [
+    def ordered_candidates(self, preferred: str) -> list[str]:
+        base = [
+            preferred,
+            *self.fallback_models,
             "gemini-4-hydrogen-high",
-            "gemini-4-argon-high",
-            "claude-sonnet-5-5-high",
+            "gemini-4-hydrogen-medium",
+            "gemini-4-hydrogen-low",
             "gemini-3.8-flash-high",
             "gemini-3.8-flash-medium",
+            "claude-sonnet-5-5-high",
             "gpt-oss-120b-medium",
         ]
-        for c in candidates:
-            if c and c != failed_model and c not in tried:
-                return c
+        seen = set()
+        out = []
+        for m in base:
+            if m and m not in seen:
+                seen.add(m)
+                out.append(m)
+        return out
+
+    def pick_healthy_model(self, preferred: str, tried: set) -> str | None:
+        for cand in self.ordered_candidates(preferred):
+            if cand in tried:
+                continue
+            cooled, rem = self.cooldowns.is_cooled_down(cand)
+            if not cooled:
+                return cand
+        return None
+
+    def resolve_initial_model(self, role: str, preferred: str) -> str | None:
+        with self.model_lock:
+            current = self.supervisor_model if role == "coordinator" else self.worker_model
+        cooled, rem = self.cooldowns.is_cooled_down(current)
+        if not cooled:
+            return current
+        healthy = self.pick_healthy_model(preferred, set())
+        if healthy:
+            self.logger.write(
+                f"Skipping '{current}' (quota cooldown {format_duration(rem)} left); using healthy model '{healthy}'.",
+                "\033[33m",
+            )
+            with self.model_lock:
+                if role == "coordinator":
+                    self.supervisor_model = healthy
+                else:
+                    self.worker_model = healthy
+            key = (role, current, healthy)
+            if key not in self.reported_switches:
+                self.reported_switches.add(key)
+                emit(
+                    "model_switch",
+                    role=role,
+                    fromModel=current,
+                    toModel=healthy,
+                    reason=f"Cached cooldown ({format_duration(rem)} remaining)",
+                )
+            return healthy
         return None
 
     def desktop_context(self) -> str:
         if not self.allow_desktop:
             return "Desktop/GUI actions are disabled; restrict execution to CLI, files, and shell tasks."
-        yd_note = (
-            "ydotoold daemon is ACTIVE (you can simulate keyboard/mouse input with `ydotool`)."
-            if self.ydotool_active
-            else "ydotoold is inactive (use Hyprland IPC, app CLIs, xdg-open, wl-copy, grim; or start `systemctl --user start ydotool` if mouse/keyboard synthesis is required)."
-        )
         return (
-            "ENVIRONMENT & DESKTOP AUTOMATION CAPABILITIES:\n"
-            f"- OS: Arch Linux on Hyprland Wayland desktop (user home: {self.cwd})\n"
-            "- Launch GUI apps cleanly in background: `setsid -f hyprctl dispatch exec \"<command>\" >/dev/null 2>&1` or `nohup gtk-launch <desktop_id> >/dev/null 2>&1 &`\n"
-            "- Inspect/focus windows: `hyprctl clients -j`, `hyprctl activewindow -j`, `hyprctl dispatch focuswindow ...`, `hyprctl dispatch workspace ...`\n"
-            "- Open URLs/files: `setsid -f xdg-open \"<url_or_path>\" >/dev/null 2>&1`\n"
-            "- Clipboard: `wl-copy` / `wl-paste`\n"
-            "- Capture desktop screenshot for inspection: `grim /tmp/ai_screen_check.png`\n"
-            f"- Human-like input synthesis: {yd_note}\n"
+            "ENVIRONMENT & COMPUTER-USE TOOLING (`caelestia-desktop`):\n"
+            f"- OS: Arch Linux + Hyprland Wayland desktop (home: {self.cwd}, ydotoold: {'ACTIVE' if self.ydotool_active else 'auto-starts on call'})\n"
+            "- Use `caelestia-desktop` in bash commands for ALL GUI / browser / app control:\n"
+            "  * `caelestia-desktop windows` -> JSON list of open windows (title, class, workspace, [x,y], [w,h])\n"
+            "  * `caelestia-desktop launch firefox \"https://...\"` (or any GUI app) -> launches cleanly detached\n"
+            "  * `caelestia-desktop focus firefox` -> focuses window cleanly across Lua/standard Hyprland\n"
+            "  * `caelestia-desktop screen --grid --out /tmp/ai_screen.png` -> captures screen with labeled pixel grid; inspect with `view_file` to find exact (x, y) click targets!\n"
+            "  * `caelestia-desktop click <x> <y>` / `--double` / `--button right` -> closed-loop calibrated cursor click (within 3px accuracy)\n"
+            "  * `caelestia-desktop move <x> <y>` / `caelestia-desktop scroll -5 --x <x> --y <y>`\n"
+            "  * `caelestia-desktop type \"nội dung tiếng Việt hoặc URL\" --enter` -> full UTF-8 / Vietnamese typing via clipboard paste\n"
+            "  * `caelestia-desktop key ctrl+l` / `ctrl+t` / `ctrl+c` / `ctrl+v` / `alt+tab` / `enter`\n"
+            "  * `caelestia-desktop ocr [--region \"x,y wxh\"]` -> fast tesseract text extraction from screen\n"
+            "- Note: On this Lua-wrapped Hyprland setup, prefer `caelestia-desktop` over raw `hyprctl dispatch` or raw `ydotool mousemove`.\n"
         )
 
     def run_agy(
@@ -216,12 +347,15 @@ class Orchestrator:
         role: str,
         worker_label: str,
         prompt: str,
-        model: str,
+        preferred_model: str,
     ) -> tuple[bool, str, str, str]:
         tried = set()
-        current_model = model
+        current_model = self.resolve_initial_model(role, preferred_model)
 
-        while not self.stop_requested:
+        if not current_model:
+            return False, "", "Tất cả model đều đang trong thời gian chờ quota. Hãy kiểm tra lại hoặc xóa cooldown trong Settings -> AI Automation.", preferred_model
+
+        while not self.stop_requested and current_model:
             tried.add(current_model)
             cmd = [
                 "agy",
@@ -366,27 +500,39 @@ class Orchestrator:
                 ), current_model
 
             failed = proc.returncode != 0
-            if (quota_hit or (failed and QUOTA_PATTERNS.search(output_text + "\n" + err_text))) and self.auto_switch:
-                next_model = self.pick_next_model(current_model, tried)
-                if next_model:
-                    self.logger.write(
-                        f"Quota / rate limit reached on '{current_model}'. Auto-switching to '{next_model}'...",
-                        "\033[1;33m",
-                    )
-                    emit(
-                        "model_switch",
-                        role=role,
-                        fromModel=current_model,
-                        toModel=next_model,
-                        reason="Quota or rate limit detected",
-                    )
-                    with self.model_lock:
-                        if role == "coordinator":
-                            self.supervisor_model = next_model
-                        else:
-                            self.worker_model = next_model
-                    current_model = next_model
-                    continue
+            combined_err = output_text + "\n" + err_text
+            if quota_hit or (failed and QUOTA_PATTERNS.search(combined_err)):
+                self.cooldowns.mark_exhausted(current_model, err_text or combined_err)
+                rem_str = format_duration(parse_reset_seconds(err_text or combined_err))
+                if self.auto_switch:
+                    next_model = self.pick_healthy_model(preferred_model, tried)
+                    if next_model:
+                        self.logger.write(
+                            f"Quota reached on '{current_model}' (reset ~{rem_str}). Switching to '{next_model}'...",
+                            "\033[1;33m",
+                        )
+                        with self.model_lock:
+                            if role == "coordinator":
+                                self.supervisor_model = next_model
+                            else:
+                                self.worker_model = next_model
+                        sw_key = (role, current_model, next_model)
+                        if sw_key not in self.reported_switches:
+                            self.reported_switches.add(sw_key)
+                            emit(
+                                "model_switch",
+                                role=role,
+                                fromModel=current_model,
+                                toModel=next_model,
+                                reason=f"Quota exhausted (resets in ~{rem_str})",
+                            )
+                        current_model = next_model
+                        continue
+                return False, output_text, (
+                    f"Hết hạn mức trên tất cả model khả dụng (tạm nghỉ ~{rem_str})."
+                    if self.is_vi()
+                    else f"All available models reached quota limits (resets in ~{rem_str})."
+                ), current_model
 
             if failed:
                 self.logger.write(f"[{worker_label}] exited with code {proc.returncode}: {err_text}", "\033[1;31m")
@@ -394,15 +540,13 @@ class Orchestrator:
 
             return True, output_text, err_text, current_model
 
-        return False, "", "Stopped by user.", current_model
+        return False, "", "Stopped by user.", preferred_model
 
     def run_collaborators(self, user_task: str, specs: list[dict]) -> list[dict]:
-        """Run 1..4 specialists cleanly in parallel or sequence based on spec['parallel']."""
         if not specs:
             return []
 
         results = []
-        # Cap at 4 specialists max
         specs = specs[:4]
         parallel_specs = [s for s in specs if s.get("parallel", True)]
         seq_specs = [s for s in specs if not s.get("parallel", True)]
@@ -418,9 +562,7 @@ class Orchestrator:
                 f"USER REQUEST:\n{user_task}\n\n"
                 f"ASSIGNED SCOPE ({rname}):\n{sub_prompt}"
             )
-            with self.model_lock:
-                m = self.worker_model
-            ok_w, out_w, err_w, eff_m = self.run_agy("executor", rname, full_prompt, m)
+            ok_w, out_w, err_w, eff_m = self.run_agy("executor", rname, full_prompt, self.worker_model)
             return {
                 "role_name": rname,
                 "ok": ok_w,
@@ -430,6 +572,8 @@ class Orchestrator:
             }
 
         if parallel_specs and not self.stop_requested:
+            # Resolve initial shared worker model BEFORE spawning threads so N threads don't stampede a dead model
+            self.resolve_initial_model("executor", self.worker_model)
             with ThreadPoolExecutor(max_workers=min(4, len(parallel_specs))) as pool:
                 fut_map = {
                     pool.submit(execute_one, i, s): i
@@ -454,7 +598,6 @@ class Orchestrator:
         for j, s in enumerate(seq_specs):
             if self.stop_requested:
                 break
-            # Pass brief context from prior parallel collaborators so dependent steps (e.g. QA/integration) see what changed
             prior_ctx = "\n\n".join(
                 f"[{r['role_name']} ({'OK' if r['ok'] else 'ERR'})]:\n{r['output'][:2000]}"
                 for r in results
@@ -471,19 +614,18 @@ class Orchestrator:
         emit(
             "phase",
             phase="planning",
-            progress=15,
-            detail="Đang phân tích mức độ yêu cầu..." if self.is_vi() else "Classifying request complexity...",
+            progress=12,
+            detail="Đang phân tích yêu cầu..." if self.is_vi() else "Classifying request...",
         )
 
-        # Stage 1: Smart Triage (Direct answer vs 1..4 Collaborators)
         triage_prompt = (
             "You are Meow AI (Primary Coordinator) on a local Arch Linux + Hyprland desktop.\n"
-            "First, classify the USER REQUEST carefully:\n"
-            '- Use `"mode": "direct"` for simple questions, definitions, general knowledge, quick explanations, code snippets, math, or conversation that do NOT require inspecting files, running commands, editing configs/code, or controlling desktop apps. Provide `"direct_answer"` right away.\n'
-            '- Use `"mode": "delegate"` ONLY when execution, live inspection, file editing, UI/code building, or desktop automation is required. Dynamically scale `"collaborators"` between 1 and 4 specialized subtasks according to task complexity:\n'
-            "  * Small single-step action (check uptime/disk, open app, quick read): 1 collaborator.\n"
-            "  * Moderate task (code fix + test, or multi-command diagnostics): 2 collaborators.\n"
-            "  * Complex software/UI engineering (architecture, UI components, backend/service logic, verification): 3-4 collaborators (set `parallel: true` for independent parts, `parallel: false` for final integration/QA checks).\n\n"
+            "Classify the USER REQUEST carefully:\n"
+            '- Use `"mode": "direct"` for simple questions, definitions, general knowledge, quick code snippets, math, or conversation needing NO commands, file inspection, editing, or GUI control.\n'
+            '- Use `"mode": "delegate"` whenever execution, file/code inspection, feature building, testing, or GUI/browser desktop control (`caelestia-desktop`) is needed. Scale `"collaborators"` cleanly from 1 to 4:\n'
+            "  * Small read/check/open task: 1 collaborator.\n"
+            "  * Moderate fix + verification, or browser search + summary app: 2 collaborators (`Research/Action`, `Verification/Summary`).\n"
+            "  * Complex feature development: 3–4 collaborators (`Architecture/UI`, `Backend/Service`, `Integration/QA`) with `parallel: false` for QA depending on prior edits.\n\n"
             f"{self.language_instruction()}\n\n"
             f"{self.desktop_context()}\n"
             f"USER REQUEST:\n{user_task}\n\n"
@@ -491,8 +633,8 @@ class Orchestrator:
             "{\n"
             '  "mode": "direct" or "delegate",\n'
             '  "direct_answer": "Full helpful response if mode=direct, else empty string",\n'
-            '  "plan_summary": "1 concise sentence explaining what you are mobilizing if mode=delegate",\n'
-            '  "success_criteria": "Exact checks to verify after execution if mode=delegate",\n'
+            '  "plan_summary": "1 concise sentence explaining what Meow AI is orchestrating if mode=delegate",\n'
+            '  "success_criteria": "Exact checks to verify perfection if mode=delegate",\n'
             '  "collaborators": [\n'
             '    {"role_name": "Short role title", "prompt": "Detailed actionable instruction", "parallel": true}\n'
             "  ]\n"
@@ -509,7 +651,7 @@ class Orchestrator:
 
         if mode == "direct" and triage.get("direct_answer"):
             answer = str(triage["direct_answer"]).strip()
-            self.logger.write("Triage -> direct answer (no workers needed).", "\033[1;36m")
+            self.logger.write("Triage -> direct answer.", "\033[1;36m")
             emit(
                 "assistant_message",
                 model=eff_coord,
@@ -526,16 +668,10 @@ class Orchestrator:
         collaborators = collaborators[:4]
 
         collab_count = len(collaborators)
-        plan_summary = str(triage.get("plan_summary") or "").strip()
-        if not plan_summary:
-            plan_summary = (
-                f"Đang điều phối {collab_count} luồng xử lý chuyên trách để thực hiện yêu cầu."
-                if self.is_vi()
-                else f"Coordinating {collab_count} specialist track(s) to complete your request."
-            )
-        success_criteria = str(triage.get("success_criteria") or "All requested actions succeed cleanly without errors.")
-
-        # Subtle plan line inside Progress status instead of noisy chat bubble
+        plan_summary = str(triage.get("plan_summary") or "").strip() or (
+            f"Đang điều phối {collab_count} luồng xử lý." if self.is_vi() else f"Coordinating {collab_count} execution track(s)."
+        )
+        success_criteria = str(triage.get("success_criteria") or "All requested changes and checks succeed cleanly without errors.")
         role_names = ", ".join(str(c.get("role_name", "Task")) for c in collaborators)
         emit(
             "assistant_message",
@@ -545,17 +681,21 @@ class Orchestrator:
         )
         self.logger.write(f"Triage -> delegate ({collab_count}): {role_names}", "\033[35m")
 
-        max_rounds = 3
+        # Autonomous polish loop + optional user confirmation
+        max_auto_polish = 2
+        polish_used = 0
+        max_total_rounds = 4
         current_specs = collaborators
+        accumulated_notes = []
 
-        for round_idx in range(1, max_rounds + 1):
+        for round_idx in range(1, max_total_rounds + 1):
             if self.stop_requested:
                 break
 
             emit(
                 "phase",
                 phase="working",
-                progress=52,
+                progress=min(75, 35 + round_idx * 15),
                 detail=(
                     f"Đang thực thi {len(current_specs)} phân hệ (Lượt {round_idx})..."
                     if self.is_vi()
@@ -567,38 +707,39 @@ class Orchestrator:
             if self.stop_requested:
                 break
 
+            for r in collab_results:
+                accumulated_notes.append(
+                    f"[Round {round_idx} • {r['role_name']} ({'SUCCESS' if r['ok'] else 'ERROR: ' + r['error']})]\n{r['output']}"
+                )
+
             emit(
                 "phase",
                 phase="verifying",
-                progress=85,
-                detail="Đang kiểm chứng & tổng hợp câu trả lời..." if self.is_vi() else "Verifying & synthesizing final answer...",
+                progress=86,
+                detail="Đang kiểm chứng & tổng hợp..." if self.is_vi() else "Verifying & synthesizing outcome...",
             )
-            self.logger.write("Coordinator verifying collaborator outputs and synthesizing reply...", "\033[1;35m")
+            self.logger.write("Coordinator verifying collaborator outputs...", "\033[1;35m")
 
-            bundled_reports = "\n\n".join(
-                f"=== {r['role_name']} ({'SUCCESS' if r['ok'] else 'ERROR: ' + r['error']}) ===\n{r['output']}"
-                for r in collab_results
-            )
+            bundled_reports = "\n\n".join(accumulated_notes[-6:])
 
             synthesis_prompt = (
-                "You are Meow AI (Primary Coordinator). Your specialist collaborators have finished executing the user's task.\n"
-                "IMPORTANT:\n"
-                "1. The user did NOT see the raw collaborator reports — YOU are responsible for verifying actual files/system/outputs "
-                "(run quick verification checks if appropriate) and writing the ONE authoritative final reply to the user.\n"
-                "2. Compare everything strictly against USER REQUEST and SUCCESS CRITERIA.\n"
-                "3. If valid=true, summarize exact verified metrics, files changed, or actions performed cleanly and directly in `final_reply` "
-                "(NEVER mention 'collaborators', 'Agent A', 'Agent B', 'Agent C').\n"
-                "4. If execution failed, missed key requirements, or is risky/incomplete, set `valid=false` and write `question_for_user`.\n\n"
+                "You are Meow AI (Primary Coordinator). The background execution specialists finished Round "
+                f"{round_idx} (autonomous polish remaining: {max_auto_polish - polish_used}).\n"
+                "Verify actual files, lint/test outputs, or desktop window state yourself using tools if appropriate, and choose ONE verdict:\n"
+                '1. `"complete"`: Everything requested is genuinely verified, clean, and ready for the user. Write a polished `final_reply` directly to the user.\n'
+                '2. `"needs_polish"`: ONLY if an objective error/lint failure/incomplete detail exists that you can fix automatically right now without bothering the user AND autonomous polish remains > 0! Provide `polish_prompt` with exact fix instructions.\n'
+                '3. `"needs_user_input"`: Genuine ambiguity, external blocker (quota/missing login/destructive action), or still failing after auto-polish. Write `question_for_user`.\n\n'
+                "CRITICAL: Never mention 'Agent A/B/C' or internal collaborators in `final_reply`.\n\n"
                 f"{self.language_instruction()}\n\n"
                 f"USER REQUEST:\n{user_task}\n\n"
                 f"SUCCESS CRITERIA:\n{success_criteria}\n\n"
                 f"INTERNAL SPECIALIST OUTPUTS:\n{bundled_reports}\n\n"
                 "Respond ONLY with valid JSON:\n"
                 "{\n"
-                '  "valid": true or false,\n'
-                '  "final_reply": "Complete synthesized answer directly for the user based on verified facts",\n'
-                '  "question_for_user": "If valid is false, ask user clearly whether to retry/accept/abort; else empty",\n'
-                '  "suggested_fix_prompt": "If valid is false, concrete fix scope for retry; else empty"\n'
+                '  "verdict": "complete" | "needs_polish" | "needs_user_input",\n'
+                '  "final_reply": "Complete synthesized response for user if verdict=complete, or issue summary otherwise",\n'
+                '  "polish_prompt": "If verdict=needs_polish, exact instructions for fixer specialist",\n'
+                '  "question_for_user": "If verdict=needs_user_input, clear question for user"\n'
                 "}"
             )
 
@@ -608,14 +749,14 @@ class Orchestrator:
                 return
 
             synth = extract_json_block(synth_raw) or {}
-            is_valid = bool(synth.get("valid", all(r["ok"] for r in collab_results)))
+            verdict = str(synth.get("verdict") or ("complete" if all(r["ok"] for r in collab_results) else "needs_user_input")).lower()
             final_reply = str(synth.get("final_reply") or synth_raw or "Done.").strip()
+            polish_prompt = str(synth.get("polish_prompt") or "").strip()
             question = str(synth.get("question_for_user") or "").strip()
-            fix_prompt = str(synth.get("suggested_fix_prompt") or "").strip()
 
-            self.logger.write(f"Coordinator Verification -> valid={is_valid}", "\033[1;35m")
+            self.logger.write(f"Coordinator Verdict -> {verdict}", "\033[1;35m")
 
-            if is_valid:
+            if verdict == "complete":
                 emit(
                     "assistant_message",
                     model=eff_coord2,
@@ -626,20 +767,35 @@ class Orchestrator:
                 self.logger.write("TASK COMPLETED SUCCESSFULLY.", "\033[1;32m")
                 return
 
+            if verdict == "needs_polish" and polish_used < max_auto_polish and polish_prompt:
+                polish_used += 1
+                self.logger.write(f"Auto-polish #{polish_used}: {polish_prompt[:140]}", "\033[1;36m")
+                emit(
+                    "engine_step",
+                    worker="Coordinator QA",
+                    step=polish_used,
+                    detail=f"Tự động tối ưu & sửa lỗi (Vòng {polish_used})" if self.is_vi() else f"Auto-polish & fix pass #{polish_used}",
+                )
+                current_specs = [{
+                    "role_name": f"Polish & Fix #{polish_used}",
+                    "prompt": polish_prompt,
+                    "parallel": True,
+                }]
+                continue
+
             if not self.ask_on_invalid:
                 emit("task_error", message=final_reply)
                 return
 
-            fallback_q = (
-                f"Hệ thống phát hiện vấn đề khi đối chiếu kết quả:\n{final_reply}\n\nBạn muốn chạy lại để khắc phục, chấp nhận kết quả hiện tại, hay hủy?"
+            prompt_question = question or (
+                f"Hệ thống phát hiện vấn đề cần bạn quyết định:\n{final_reply}\n\nBạn muốn thử lại, chấp nhận kết quả hiện tại, hay hủy?"
                 if self.is_vi()
-                else f"Verification detected an issue:\n{final_reply}\n\nWould you like to retry with fixes, accept anyway, or abort?"
+                else f"Verification flagged an issue:\n{final_reply}\n\nWould you like to retry, accept anyway, or abort?"
             )
-            prompt_question = question or fallback_q
             emit(
                 "phase",
                 phase="waiting_user",
-                progress=75,
+                progress=80,
                 detail="Đang chờ bạn xác nhận..." if self.is_vi() else "Waiting for your confirmation...",
             )
             emit(
@@ -647,7 +803,7 @@ class Orchestrator:
                 model=eff_coord2,
                 verification=final_reply,
                 question=prompt_question,
-                suggestedFix=fix_prompt,
+                suggestedFix=polish_prompt,
             )
             self.logger.write(f"ASKING USER: {prompt_question}", "\033[1;33m")
 
@@ -680,19 +836,15 @@ class Orchestrator:
                         emit("task_error", message="Đã hủy theo xác nhận." if self.is_vi() else "Aborted by user.")
                         return
                     else:
-                        guidance = user_text or fix_prompt or "Fix all issues reported during verification."
+                        guidance = user_text or polish_prompt or "Fix remaining issues and verify thoroughly."
                         current_specs = [{
-                            "role_name": "Recovery Executor",
-                            "prompt": (
-                                f"Previous verification failed:\n{final_reply}\n\n"
-                                f"USER / COORDINATOR GUIDANCE:\n{guidance}\n\n"
-                                "Fix everything cleanly and verify outputs."
-                            ),
+                            "role_name": "Guided Fixer",
+                            "prompt": f"Previous findings:\n{final_reply}\n\nUSER GUIDANCE:\n{guidance}\n\nApply fixes cleanly and verify.",
                             "parallel": True,
                         }]
                         break
 
-        emit("task_error", message="Đã vượt quá số lượt thử lại." if self.is_vi() else "Reached maximum retry rounds.")
+        emit("task_error", message="Đã vượt quá số lượt tối đa." if self.is_vi() else "Reached maximum execution rounds.")
 
 
 def main():
