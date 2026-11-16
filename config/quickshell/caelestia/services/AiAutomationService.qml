@@ -123,7 +123,7 @@ Singleton {
     }
 
     function installCli(): void {
-        const script = "echo 'Installing Antigravity CLI...'; curl -fsSL https://antigravity.google/install.sh | bash || true; echo ''; read -p 'Press Enter to close... ' _";
+        const script = "export PATH=\"$HOME/.local/bin:$PATH\"; echo 'Installing Antigravity CLI...'; curl -fsSL https://antigravity.google/cli/install.sh | bash && agy install --skip-aliases || (paru -S --needed --noconfirm antigravity-cli || true); echo ''; read -p 'Press Enter to close... ' _";
         Quickshell.execDetached(["foot", "--app-id", "caelestia-ai-install", "-T", "Install Antigravity CLI", "-e", "bash", "-c", script]);
         authRefreshTimer.restart();
     }
@@ -294,27 +294,24 @@ Singleton {
                 currentProgress = Number(ev.progress) || currentProgress;
             phaseDetail = ev.detail || "";
         } else if (t === "engine_start") {
-            if (ev.role === "supervisor") {
+            const label = ev.label || "";
+            if (ev.role === "coordinator") {
                 activeSupervisorModel = ev.model || supervisorModel;
             } else {
                 activeWorkerModel = ev.model || workerModel;
-                streamingWorkerModel = activeWorkerModel;
-                streamingWorkerText = "";
                 const nextSteps = liveSteps.slice();
                 nextSteps.push({
                     ts: nowStamp(),
-                    label: trChat(`Khởi chạy bộ thực thi (${activeWorkerModel})`, `Starting execution engine (${activeWorkerModel})`)
+                    label: trChat(`Khởi chạy phân hệ: ${label} (${activeWorkerModel})`, `Starting track: ${label} (${activeWorkerModel})`)
                 });
                 liveSteps = nextSteps;
             }
-        } else if (t === "engine_delta") {
-            if (ev.role === "executor" && ev.text)
-                streamingWorkerText += ev.text;
         } else if (t === "engine_step") {
+            const who = ev.worker ? `${ev.worker} • ` : "";
             const nextSteps = liveSteps.slice();
             nextSteps.push({
                 ts: nowStamp(),
-                label: trChat(`Bước #${ev.step}: ${ev.detail}`, `Step #${ev.step}: ${ev.detail}`)
+                label: `${who}${ev.detail}`
             });
             liveSteps = nextSteps;
         } else if (t === "model_switch") {
@@ -331,9 +328,6 @@ Singleton {
             });
         } else if (t === "assistant_message") {
             appendMessage("assistant", ev.title || "Meow AI", ev.text || "", ev.model || "");
-        } else if (t === "execution_report") {
-            streamingWorkerText = "";
-            appendMessage("execution", ev.title || trChat("Chi tiết thực thi", "Execution Details"), ev.text || "", ev.model || "");
         } else if (t === "user_question") {
             streamingWorkerText = "";
             hasPendingQuestion = true;

@@ -2,10 +2,19 @@
 """
 Caelestia AI Task Automation Orchestrator.
 
-Runs a two-stage Coordinator -> Execution Engine loop using Antigravity CLI (`agy`)
-with automatic quota/rate-limit model failover and live NDJSON progress events for QML UI.
+Flow:
+1. Primary Coordinator triages the user's request:
+   - "direct": Simple Q&A / explanation -> answers directly in 1 turn without spawning workers.
+   - "delegate": Complex or actionable task -> dynamically allocates 1..4 Collaborators
+     (e.g. B, C, D, E equivalents scaled to task size/complexity) in parallel/sequential order.
+2. Collaborators execute silently in background with full tool & desktop permissions
+   while emitting concise live milestone progress into the Chat UI.
+3. Primary Coordinator independently verifies collaborator outputs and synthesizes ONE
+   clean final response directly to the user (never dumping raw collaborator logs to chat),
+   or asks confirmation if verification detects an issue.
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import queue
@@ -28,16 +37,20 @@ AUTH_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+_EMIT_LOCK = threading.Lock()
+
 
 def emit(event_type: str, **payload):
     msg = {"type": event_type, "ts": datetime.now().strftime("%H:%M:%S"), **payload}
-    sys.stdout.write(json.dumps(msg, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    with _EMIT_LOCK:
+        sys.stdout.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
 
 
 class SessionLogger:
     def __init__(self, log_path: str):
         self.log_path = log_path
+        self._lock = threading.Lock()
         Path(log_path).parent.mkdir(parents=True, exist_ok=True)
         with open(self.log_path, "w", encoding="utf-8") as f:
             f.write(
@@ -49,12 +62,14 @@ class SessionLogger:
         ts = datetime.now().strftime("%H:%M:%S")
         prefix = f"\033[2m[{ts}]\033[0m "
         line = f"{prefix}{color}{text}\033[0m\n" if color else f"{prefix}{text}\n"
-        with open(self.log_path, "a", encoding="utf-8") as f:
-            f.write(line)
+        with self._lock:
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(line)
 
     def raw(self, text: str):
-        with open(self.log_path, "a", encoding="utf-8") as f:
-            f.write(text)
+        with self._lock:
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(text)
 
 
 def extract_json_block(text: str):
@@ -87,8 +102,9 @@ class Orchestrator:
         self.logger = SessionLogger(log_path)
         self.inbox = queue.Queue()
         self.stop_requested = False
-        self.current_proc = None
+        self.active_procs = set()
         self.proc_lock = threading.Lock()
+        self.model_lock = threading.Lock()
 
         self.supervisor_model = config.get("supervisorModel", "") or "gemini-4-hydrogen-high"
         self.worker_model = config.get("workerModel", "") or "gemini-4-argon-high"
@@ -121,19 +137,19 @@ class Orchestrator:
     def language_instruction(self) -> str:
         if self.chat_language == "vi":
             return (
-                "LANGUAGE REQUIREMENT (STRICT): You MUST write ALL user-facing explanations, summaries, "
-                "verification notes, and confirmation questions in clear, natural Vietnamese (Tiếng Việt). "
-                "Do NOT refer to yourself as 'Agent A' or 'Agent B'; speak naturally as a unified AI assistant."
+                "LANGUAGE REQUIREMENT (STRICT): You MUST write ALL user-facing answers, plans, summaries, "
+                "and confirmation questions in clear, natural Vietnamese (Tiếng Việt). "
+                "Never refer to internal roles as 'Agent A', 'Agent B', 'Agent C'; speak cohesively as Meow AI."
             )
         elif self.chat_language == "en":
             return (
-                "LANGUAGE REQUIREMENT (STRICT): Write ALL user-facing explanations, summaries, "
-                "verification notes, and confirmation questions in clear, concise English. "
-                "Do NOT refer to yourself as 'Agent A' or 'Agent B'; speak naturally as a unified AI assistant."
+                "LANGUAGE REQUIREMENT (STRICT): Write ALL user-facing answers, plans, summaries, "
+                "and confirmation questions in clear, concise English. "
+                "Never refer to internal roles as 'Agent A', 'Agent B', 'Agent C'; speak cohesively as Meow AI."
             )
         return (
-            "LANGUAGE REQUIREMENT: Match the exact language of the USER REQUEST for all summaries, "
-            "verification notes, and confirmation questions. Do NOT expose 'Agent A' or 'Agent B' labels."
+            "LANGUAGE REQUIREMENT: Match the exact language of the USER REQUEST for all answers, summaries, "
+            "and confirmation questions. Never expose internal 'Agent A/B/C' labels."
         )
 
     def start_stdin_reader(self):
@@ -149,11 +165,12 @@ class Orchestrator:
                 if cmd.get("type") == "stop":
                     self.stop_requested = True
                     with self.proc_lock:
-                        if self.current_proc and self.current_proc.poll() is None:
-                            try:
-                                self.current_proc.terminate()
-                            except Exception:
-                                pass
+                        for p in list(self.active_procs):
+                            if p.poll() is None:
+                                try:
+                                    p.terminate()
+                                except Exception:
+                                    pass
                     self.inbox.put(cmd)
                     break
                 self.inbox.put(cmd)
@@ -179,27 +196,27 @@ class Orchestrator:
         if not self.allow_desktop:
             return "Desktop/GUI actions are disabled; restrict execution to CLI, files, and shell tasks."
         yd_note = (
-            "ydotoold daemon is ACTIVE (you can simulate real keyboard/mouse input with `ydotool`)."
+            "ydotoold daemon is ACTIVE (you can simulate keyboard/mouse input with `ydotool`)."
             if self.ydotool_active
-            else "ydotoold is currently inactive (use Hyprland IPC, app CLIs, xdg-open, wl-copy, grim; or start `systemctl --user start ydotool` if mouse/keyboard synthesis is truly required)."
+            else "ydotoold is inactive (use Hyprland IPC, app CLIs, xdg-open, wl-copy, grim; or start `systemctl --user start ydotool` if mouse/keyboard synthesis is required)."
         )
         return (
             "ENVIRONMENT & DESKTOP AUTOMATION CAPABILITIES:\n"
             f"- OS: Arch Linux on Hyprland Wayland desktop (user home: {self.cwd})\n"
-            "- Launch GUI apps cleanly in background (never block): `setsid -f hyprctl dispatch exec \"<command>\" >/dev/null 2>&1` or `nohup gtk-launch <desktop_id> >/dev/null 2>&1 &`\n"
+            "- Launch GUI apps cleanly in background: `setsid -f hyprctl dispatch exec \"<command>\" >/dev/null 2>&1` or `nohup gtk-launch <desktop_id> >/dev/null 2>&1 &`\n"
             "- Inspect/focus windows: `hyprctl clients -j`, `hyprctl activewindow -j`, `hyprctl dispatch focuswindow ...`, `hyprctl dispatch workspace ...`\n"
             "- Open URLs/files: `setsid -f xdg-open \"<url_or_path>\" >/dev/null 2>&1`\n"
             "- Clipboard: `wl-copy` / `wl-paste`\n"
-            "- Capture desktop screenshot to inspect GUI state visually: `grim /tmp/ai_screen_check.png`\n"
+            "- Capture desktop screenshot for inspection: `grim /tmp/ai_screen_check.png`\n"
             f"- Human-like input synthesis: {yd_note}\n"
         )
 
     def run_agy(
         self,
         role: str,
+        worker_label: str,
         prompt: str,
         model: str,
-        stream_to_ui: bool = False,
     ) -> tuple[bool, str, str, str]:
         tried = set()
         current_model = model
@@ -218,19 +235,13 @@ class Orchestrator:
             if self.full_perms:
                 cmd.append("--dangerously-skip-permissions")
 
-            role_label = "Coordinator" if role == "supervisor" else "Execution Engine"
-            role_color = "\033[1;35m" if role == "supervisor" else "\033[1;32m"
+            role_color = "\033[1;35m" if role == "coordinator" else "\033[1;32m"
             self.logger.write(
-                f"{role_label} starting with model [{current_model}]"
-                + (" [FULL PERMISSIONS]" if self.full_perms else ""),
+                f"[{worker_label}] starting ({current_model})"
+                + (" [FULL PERMS]" if self.full_perms else ""),
                 role_color,
             )
-            emit(
-                "engine_start",
-                role=role,
-                model=current_model,
-                fullPermissions=self.full_perms,
-            )
+            emit("engine_start", role=role, label=worker_label, model=current_model)
 
             env = os.environ.copy()
             env["TERM"] = "dumb"
@@ -248,7 +259,7 @@ class Orchestrator:
                 env=env,
             )
             with self.proc_lock:
-                self.current_proc = proc
+                self.active_procs.add(proc)
 
             collected_text = []
             stderr_lines = []
@@ -261,7 +272,7 @@ class Orchestrator:
                     stderr_lines.append(line)
                     clean = line.rstrip()
                     if clean:
-                        self.logger.write(f"[{role_label}] stderr: {clean}", "\033[33m")
+                        self.logger.write(f"[{worker_label}] stderr: {clean}", "\033[33m")
                         if QUOTA_PATTERNS.search(clean):
                             nonlocal quota_hit
                             quota_hit = True
@@ -288,8 +299,6 @@ class Orchestrator:
                         quota_hit = True
                     if AUTH_PATTERNS.search(raw_line):
                         auth_hit = True
-                    if stream_to_ui:
-                        emit("engine_delta", role=role, text=raw_line)
                     self.logger.raw(raw_line)
                     continue
 
@@ -310,13 +319,11 @@ class Orchestrator:
                         self.logger.raw(delta)
                         if QUOTA_PATTERNS.search(delta):
                             quota_hit = True
-                        if stream_to_ui:
-                            emit("engine_delta", role=role, text=delta)
                     elif step_type not in ("user_input", "agent_response", "") and step_idx not in seen_step_tool_idx:
                         seen_step_tool_idx.add(step_idx)
                         tool_info = su.get("tool_name") or step_type
-                        self.logger.write(f"  -> {role_label} step #{step_idx}: {tool_info}", "\033[36m")
-                        emit("engine_step", role=role, step=step_idx, detail=str(tool_info))
+                        self.logger.write(f"  -> [{worker_label}] step #{step_idx}: {tool_info}", "\033[36m")
+                        emit("engine_step", worker=worker_label, step=step_idx, detail=str(tool_info))
                 elif ev_type == "result":
                     res = ev.get("result", {})
                     status = res.get("status", "")
@@ -341,7 +348,7 @@ class Orchestrator:
             proc.wait()
             err_thread.join(timeout=2)
             with self.proc_lock:
-                self.current_proc = None
+                self.active_procs.discard(proc)
 
             self.logger.raw("\n")
             output_text = (final_result_text if final_result_text is not None else "".join(collected_text)).strip()
@@ -373,79 +380,173 @@ class Orchestrator:
                         toModel=next_model,
                         reason="Quota or rate limit detected",
                     )
-                    if role == "supervisor":
-                        self.supervisor_model = next_model
-                    else:
-                        self.worker_model = next_model
+                    with self.model_lock:
+                        if role == "coordinator":
+                            self.supervisor_model = next_model
+                        else:
+                            self.worker_model = next_model
                     current_model = next_model
                     continue
 
             if failed:
-                self.logger.write(f"{role_label} exited with code {proc.returncode}: {err_text}", "\033[1;31m")
+                self.logger.write(f"[{worker_label}] exited with code {proc.returncode}: {err_text}", "\033[1;31m")
                 return False, output_text, err_text or f"agy exited with code {proc.returncode}", current_model
 
             return True, output_text, err_text, current_model
 
         return False, "", "Stopped by user.", current_model
 
+    def run_collaborators(self, user_task: str, specs: list[dict]) -> list[dict]:
+        """Run 1..4 specialists cleanly in parallel or sequence based on spec['parallel']."""
+        if not specs:
+            return []
+
+        results = []
+        # Cap at 4 specialists max
+        specs = specs[:4]
+        parallel_specs = [s for s in specs if s.get("parallel", True)]
+        seq_specs = [s for s in specs if not s.get("parallel", True)]
+
+        def execute_one(idx: int, spec: dict) -> dict:
+            rname = str(spec.get("role_name") or f"Specialist {idx + 1}")
+            sub_prompt = str(spec.get("prompt") or user_task)
+            full_prompt = (
+                f"You are an internal execution specialist ({rname}) assisting the Coordinator.\n"
+                "Your findings and work will be verified and synthesized by the Coordinator before replying to the user.\n"
+                "Execute your assigned scope thoroughly and concisely report exact commands run, files touched, and concrete facts.\n\n"
+                f"{self.desktop_context()}\n"
+                f"USER REQUEST:\n{user_task}\n\n"
+                f"ASSIGNED SCOPE ({rname}):\n{sub_prompt}"
+            )
+            with self.model_lock:
+                m = self.worker_model
+            ok_w, out_w, err_w, eff_m = self.run_agy("executor", rname, full_prompt, m)
+            return {
+                "role_name": rname,
+                "ok": ok_w,
+                "output": out_w,
+                "error": err_w,
+                "model": eff_m,
+            }
+
+        if parallel_specs and not self.stop_requested:
+            with ThreadPoolExecutor(max_workers=min(4, len(parallel_specs))) as pool:
+                fut_map = {
+                    pool.submit(execute_one, i, s): i
+                    for i, s in enumerate(parallel_specs)
+                }
+                indexed_res = {}
+                for fut in as_completed(fut_map):
+                    i = fut_map[fut]
+                    try:
+                        indexed_res[i] = fut.result()
+                    except Exception as ex:
+                        indexed_res[i] = {
+                            "role_name": parallel_specs[i].get("role_name", "Specialist"),
+                            "ok": False,
+                            "output": "",
+                            "error": str(ex),
+                            "model": self.worker_model,
+                        }
+                for i in sorted(indexed_res):
+                    results.append(indexed_res[i])
+
+        for j, s in enumerate(seq_specs):
+            if self.stop_requested:
+                break
+            # Pass brief context from prior parallel collaborators so dependent steps (e.g. QA/integration) see what changed
+            prior_ctx = "\n\n".join(
+                f"[{r['role_name']} ({'OK' if r['ok'] else 'ERR'})]:\n{r['output'][:2000]}"
+                for r in results
+            )
+            enriched = dict(s)
+            if prior_ctx:
+                enriched["prompt"] = f"{s.get('prompt', '')}\n\nPREVIOUS SPECIALIST RESULTS:\n{prior_ctx}"
+            results.append(execute_one(len(parallel_specs) + j, enriched))
+
+        return results
+
     def run_task(self, user_task: str):
         self.logger.write(f"USER REQUEST: {user_task}", "\033[1;34m")
         emit(
             "phase",
             phase="planning",
-            progress=18,
-            detail="Đang phân tích yêu cầu & lập kế hoạch..." if self.is_vi() else "Analyzing request & planning steps...",
+            progress=15,
+            detail="Đang phân tích mức độ yêu cầu..." if self.is_vi() else "Classifying request complexity...",
         )
 
-        # 1. Primary Coordinator plans execution instructions and verification criteria
-        plan_prompt = (
-            "You are the Primary AI Coordinator on a local Linux desktop.\n"
-            "Analyze the user's request, write clear concrete execution steps for the background execution engine, "
-            "and define verifiable success criteria.\n\n"
+        # Stage 1: Smart Triage (Direct answer vs 1..4 Collaborators)
+        triage_prompt = (
+            "You are Meow AI (Primary Coordinator) on a local Arch Linux + Hyprland desktop.\n"
+            "First, classify the USER REQUEST carefully:\n"
+            '- Use `"mode": "direct"` for simple questions, definitions, general knowledge, quick explanations, code snippets, math, or conversation that do NOT require inspecting files, running commands, editing configs/code, or controlling desktop apps. Provide `"direct_answer"` right away.\n'
+            '- Use `"mode": "delegate"` ONLY when execution, live inspection, file editing, UI/code building, or desktop automation is required. Dynamically scale `"collaborators"` between 1 and 4 specialized subtasks according to task complexity:\n'
+            "  * Small single-step action (check uptime/disk, open app, quick read): 1 collaborator.\n"
+            "  * Moderate task (code fix + test, or multi-command diagnostics): 2 collaborators.\n"
+            "  * Complex software/UI engineering (architecture, UI components, backend/service logic, verification): 3-4 collaborators (set `parallel: true` for independent parts, `parallel: false` for final integration/QA checks).\n\n"
             f"{self.language_instruction()}\n\n"
             f"{self.desktop_context()}\n"
             f"USER REQUEST:\n{user_task}\n\n"
-            "Respond ONLY with valid JSON matching this schema (no extra markdown outside JSON):\n"
+            "Respond ONLY with valid JSON:\n"
             "{\n"
-            '  "summary": "1-2 sentence plan summary for the user",\n'
-            '  "execution_prompt": "Complete step-by-step actionable instructions for execution and output verification",\n'
-            '  "success_criteria": "Exact things to verify afterwards to confirm the task succeeded"\n'
+            '  "mode": "direct" or "delegate",\n'
+            '  "direct_answer": "Full helpful response if mode=direct, else empty string",\n'
+            '  "plan_summary": "1 concise sentence explaining what you are mobilizing if mode=delegate",\n'
+            '  "success_criteria": "Exact checks to verify after execution if mode=delegate",\n'
+            '  "collaborators": [\n'
+            '    {"role_name": "Short role title", "prompt": "Detailed actionable instruction", "parallel": true}\n'
+            "  ]\n"
             "}"
         )
 
-        ok, plan_raw, err, eff_sup = self.run_agy("supervisor", plan_prompt, self.supervisor_model, stream_to_ui=False)
+        ok, triage_raw, err, eff_coord = self.run_agy("coordinator", "Coordinator", triage_prompt, self.supervisor_model)
         if not ok:
-            emit("task_error", message=err or ("Không thể lập kế hoạch thực thi." if self.is_vi() else "Failed to plan task."))
+            emit("task_error", message=err or ("Không thể phân tích yêu cầu." if self.is_vi() else "Failed to analyze request."))
             return
 
-        plan_json = extract_json_block(plan_raw) or {}
-        plan_summary = plan_json.get("summary") or ("Bắt đầu thực thi tác vụ." if self.is_vi() else "Starting task execution.")
-        exec_prompt = plan_json.get("execution_prompt") or (
-            f"Execute this user request completely and report concrete verified results:\n{user_task}\n\n{self.desktop_context()}"
-        )
-        success_criteria = plan_json.get("success_criteria") or (
-            "Tất cả tác vụ hoàn tất chính xác và không có lỗi."
-            if self.is_vi()
-            else "All requested actions complete cleanly without errors."
-        )
+        triage = extract_json_block(triage_raw) or {}
+        mode = str(triage.get("mode") or "delegate").lower()
 
+        if mode == "direct" and triage.get("direct_answer"):
+            answer = str(triage["direct_answer"]).strip()
+            self.logger.write("Triage -> direct answer (no workers needed).", "\033[1;36m")
+            emit(
+                "assistant_message",
+                model=eff_coord,
+                title="Trả lời trực tiếp" if self.is_vi() else "Direct Response",
+                text=answer,
+            )
+            emit("task_complete", progress=100, summary=answer)
+            self.logger.write("DIRECT RESPONSE COMPLETED.", "\033[1;32m")
+            return
+
+        collaborators = triage.get("collaborators") or []
+        if not isinstance(collaborators, list) or len(collaborators) == 0:
+            collaborators = [{"role_name": "Executor", "prompt": user_task, "parallel": True}]
+        collaborators = collaborators[:4]
+
+        collab_count = len(collaborators)
+        plan_summary = str(triage.get("plan_summary") or "").strip()
+        if not plan_summary:
+            plan_summary = (
+                f"Đang điều phối {collab_count} luồng xử lý chuyên trách để thực hiện yêu cầu."
+                if self.is_vi()
+                else f"Coordinating {collab_count} specialist track(s) to complete your request."
+            )
+        success_criteria = str(triage.get("success_criteria") or "All requested actions succeed cleanly without errors.")
+
+        # Subtle plan line inside Progress status instead of noisy chat bubble
+        role_names = ", ".join(str(c.get("role_name", "Task")) for c in collaborators)
         emit(
             "assistant_message",
-            model=eff_sup,
-            title="Kế hoạch thực thi" if self.is_vi() else "Execution Plan",
-            text=plan_summary,
+            model=eff_coord,
+            title=f"Điều phối ({collab_count} phân hệ)" if self.is_vi() else f"Plan ({collab_count} track{'s' if collab_count > 1 else ''})",
+            text=f"{plan_summary}\n[{role_names}]",
         )
-        self.logger.write(f"Plan: {plan_summary}", "\033[35m")
+        self.logger.write(f"Triage -> delegate ({collab_count}): {role_names}", "\033[35m")
 
-        max_rounds = 4
-        current_exec_prompt = (
-            "You are the background Execution Engine operating on the user's machine.\n"
-            "Execute the task thoroughly and concisely report exact commands, files, or windows touched.\n\n"
-            f"{self.language_instruction()}\n\n"
-            f"{self.desktop_context()}\n"
-            f"USER REQUEST:\n{user_task}\n\n"
-            f"EXECUTION PLAN:\n{exec_prompt}"
-        )
+        max_rounds = 3
+        current_specs = collaborators
 
         for round_idx in range(1, max_rounds + 1):
             if self.stop_requested:
@@ -456,102 +557,95 @@ class Orchestrator:
                 phase="working",
                 progress=52,
                 detail=(
-                    f"Đang thực thi tác vụ (Lượt {round_idx})..."
+                    f"Đang thực thi {len(current_specs)} phân hệ (Lượt {round_idx})..."
                     if self.is_vi()
-                    else f"Executing task (Step {round_idx})..."
+                    else f"Executing {len(current_specs)} track(s) (Round {round_idx})..."
                 ),
             )
-            self.logger.write(f"--- Executing Task (Round {round_idx}) ---", "\033[1;32m")
 
-            ok_b, worker_out, err_b, eff_exec = self.run_agy("executor", current_exec_prompt, self.worker_model, stream_to_ui=True)
-            emit(
-                "execution_report",
-                model=eff_exec,
-                round=round_idx,
-                title=(f"Kết quả thực thi (Lượt {round_idx})" if self.is_vi() else f"Execution Result (Round {round_idx})"),
-                text=worker_out or (f"Error: {err_b}" if err_b else "(No output)"),
-                ok=ok_b,
-            )
-
+            collab_results = self.run_collaborators(user_task, current_specs)
             if self.stop_requested:
                 break
 
             emit(
                 "phase",
                 phase="verifying",
-                progress=84,
-                detail="Đang kiểm chứng kết quả thực tế..." if self.is_vi() else "Verifying actual outcome against your request...",
+                progress=85,
+                detail="Đang kiểm chứng & tổng hợp câu trả lời..." if self.is_vi() else "Verifying & synthesizing final answer...",
             )
-            self.logger.write("Auditing execution output against user request...", "\033[1;35m")
+            self.logger.write("Coordinator verifying collaborator outputs and synthesizing reply...", "\033[1;35m")
 
-            audit_prompt = (
-                "You are the Quality & Safety Auditor reviewing what the background Execution Engine just did.\n"
-                "Objectively verify the output (and run quick inspection checks if needed) against the USER REQUEST and SUCCESS CRITERIA.\n"
-                "Be strict: if the task failed, did something wrong, missed part of the request, or left an error/risk, set valid=false and write a helpful confirmation question for the user.\n\n"
+            bundled_reports = "\n\n".join(
+                f"=== {r['role_name']} ({'SUCCESS' if r['ok'] else 'ERROR: ' + r['error']}) ===\n{r['output']}"
+                for r in collab_results
+            )
+
+            synthesis_prompt = (
+                "You are Meow AI (Primary Coordinator). Your specialist collaborators have finished executing the user's task.\n"
+                "IMPORTANT:\n"
+                "1. The user did NOT see the raw collaborator reports — YOU are responsible for verifying actual files/system/outputs "
+                "(run quick verification checks if appropriate) and writing the ONE authoritative final reply to the user.\n"
+                "2. Compare everything strictly against USER REQUEST and SUCCESS CRITERIA.\n"
+                "3. If valid=true, summarize exact verified metrics, files changed, or actions performed cleanly and directly in `final_reply` "
+                "(NEVER mention 'collaborators', 'Agent A', 'Agent B', 'Agent C').\n"
+                "4. If execution failed, missed key requirements, or is risky/incomplete, set `valid=false` and write `question_for_user`.\n\n"
                 f"{self.language_instruction()}\n\n"
                 f"USER REQUEST:\n{user_task}\n\n"
                 f"SUCCESS CRITERIA:\n{success_criteria}\n\n"
-                f"EXECUTION STATUS: {'SUCCESS' if ok_b else 'FAILED (' + err_b + ')'}\n"
-                f"EXECUTION REPORT:\n{worker_out}\n\n"
+                f"INTERNAL SPECIALIST OUTPUTS:\n{bundled_reports}\n\n"
                 "Respond ONLY with valid JSON:\n"
                 "{\n"
                 '  "valid": true or false,\n'
-                '  "verification": "Clear concise summary of what was verified and the final outcome",\n'
-                '  "question_for_user": "If valid is false (or confirmation is required), direct question asking how to proceed; otherwise empty string",\n'
-                '  "suggested_fix_prompt": "If valid is false, concrete fix instructions; otherwise empty string"\n'
+                '  "final_reply": "Complete synthesized answer directly for the user based on verified facts",\n'
+                '  "question_for_user": "If valid is false, ask user clearly whether to retry/accept/abort; else empty",\n'
+                '  "suggested_fix_prompt": "If valid is false, concrete fix scope for retry; else empty"\n'
                 "}"
             )
 
-            ok_v, audit_raw, err_v, eff_sup2 = self.run_agy("supervisor", audit_prompt, self.supervisor_model, stream_to_ui=False)
+            ok_v, synth_raw, err_v, eff_coord2 = self.run_agy("coordinator", "Coordinator Verify", synthesis_prompt, self.supervisor_model)
             if not ok_v:
                 emit("task_error", message=err_v or ("Kiểm chứng thất bại." if self.is_vi() else "Verification failed."))
                 return
 
-            audit = extract_json_block(audit_raw) or {}
-            is_valid = bool(audit.get("valid", ok_b))
-            verification = str(audit.get("verification") or audit_raw or "Done.")
-            question = str(audit.get("question_for_user") or "").strip()
-            fix_prompt = str(audit.get("suggested_fix_prompt") or "").strip()
+            synth = extract_json_block(synth_raw) or {}
+            is_valid = bool(synth.get("valid", all(r["ok"] for r in collab_results)))
+            final_reply = str(synth.get("final_reply") or synth_raw or "Done.").strip()
+            question = str(synth.get("question_for_user") or "").strip()
+            fix_prompt = str(synth.get("suggested_fix_prompt") or "").strip()
 
-            self.logger.write(f"Audit -> valid={is_valid}: {verification}", "\033[1;35m")
+            self.logger.write(f"Coordinator Verification -> valid={is_valid}", "\033[1;35m")
 
             if is_valid:
                 emit(
                     "assistant_message",
-                    model=eff_sup2,
-                    title="Hoàn tất & Đã kiểm chứng" if self.is_vi() else "Verified & Completed",
-                    text=verification,
+                    model=eff_coord2,
+                    title="Kết quả đã xác minh" if self.is_vi() else "Verified Result",
+                    text=final_reply,
                 )
-                emit("task_complete", progress=100, summary=verification)
+                emit("task_complete", progress=100, summary=final_reply)
                 self.logger.write("TASK COMPLETED SUCCESSFULLY.", "\033[1;32m")
                 return
 
             if not self.ask_on_invalid:
-                emit(
-                    "assistant_message",
-                    model=eff_sup2,
-                    title="Phát hiện vấn đề" if self.is_vi() else "Verification Issue",
-                    text=verification,
-                )
-                emit("task_error", message=verification)
+                emit("task_error", message=final_reply)
                 return
 
             fallback_q = (
-                f"Hệ thống phát hiện vấn đề khi kiểm chứng:\n{verification}\n\nBạn muốn chạy lại để sửa, chấp nhận kết quả này, hay dừng tác vụ?"
+                f"Hệ thống phát hiện vấn đề khi đối chiếu kết quả:\n{final_reply}\n\nBạn muốn chạy lại để khắc phục, chấp nhận kết quả hiện tại, hay hủy?"
                 if self.is_vi()
-                else f"Verification detected an issue:\n{verification}\n\nWould you like to retry with fixes, accept anyway, or stop?"
+                else f"Verification detected an issue:\n{final_reply}\n\nWould you like to retry with fixes, accept anyway, or abort?"
             )
             prompt_question = question or fallback_q
             emit(
                 "phase",
                 phase="waiting_user",
                 progress=75,
-                detail="Đang chờ xác nhận từ bạn..." if self.is_vi() else "Waiting for your confirmation...",
+                detail="Đang chờ bạn xác nhận..." if self.is_vi() else "Waiting for your confirmation...",
             )
             emit(
                 "user_question",
-                model=eff_sup2,
-                verification=verification,
+                model=eff_coord2,
+                verification=final_reply,
                 question=prompt_question,
                 suggestedFix=fix_prompt,
             )
@@ -566,7 +660,7 @@ class Orchestrator:
                 rtype = reply.get("type")
                 if rtype == "stop":
                     self.stop_requested = True
-                    emit("task_error", message="Đã dừng theo yêu cầu." if self.is_vi() else "Task stopped by user.")
+                    emit("task_error", message="Đã dừng theo yêu cầu." if self.is_vi() else "Stopped by user.")
                     return
                 if rtype == "user_reply":
                     action = reply.get("action", "retry")
@@ -574,25 +668,31 @@ class Orchestrator:
                     self.logger.write(f"USER REPLY ({action}): {user_text}", "\033[1;34m")
 
                     if action == "accept":
-                        emit("task_complete", progress=100, summary=verification)
+                        emit(
+                            "assistant_message",
+                            model=eff_coord2,
+                            title="Kết quả đã xác nhận" if self.is_vi() else "Accepted Result",
+                            text=final_reply,
+                        )
+                        emit("task_complete", progress=100, summary=final_reply)
                         return
                     elif action == "abort":
-                        emit("task_error", message="Đã hủy theo xác nhận người dùng." if self.is_vi() else "Aborted by user.")
+                        emit("task_error", message="Đã hủy theo xác nhận." if self.is_vi() else "Aborted by user.")
                         return
                     else:
-                        guidance = user_text or fix_prompt or "Fix the identified issues and verify carefully."
-                        current_exec_prompt = (
-                            "Previous attempt did not pass verification. Apply corrections carefully.\n\n"
-                            f"{self.language_instruction()}\n\n"
-                            f"{self.desktop_context()}\n"
-                            f"ORIGINAL USER REQUEST:\n{user_task}\n\n"
-                            f"VERIFICATION ISSUE:\n{verification}\n\n"
-                            f"USER / COORDINATOR GUIDANCE:\n{guidance}\n\n"
-                            "Fix the issue completely and report verified results."
-                        )
+                        guidance = user_text or fix_prompt or "Fix all issues reported during verification."
+                        current_specs = [{
+                            "role_name": "Recovery Executor",
+                            "prompt": (
+                                f"Previous verification failed:\n{final_reply}\n\n"
+                                f"USER / COORDINATOR GUIDANCE:\n{guidance}\n\n"
+                                "Fix everything cleanly and verify outputs."
+                            ),
+                            "parallel": True,
+                        }]
                         break
 
-        emit("task_error", message="Đã vượt quá số lần thử lại tối đa." if self.is_vi() else "Reached maximum retry rounds.")
+        emit("task_error", message="Đã vượt quá số lượt thử lại." if self.is_vi() else "Reached maximum retry rounds.")
 
 
 def main():

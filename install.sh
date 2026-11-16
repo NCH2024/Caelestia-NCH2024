@@ -5,17 +5,22 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WITH_SDDM=0
 WITH_POLKIT=0
 INSTALL_PKGS=0
+WITH_AI="prompt"
 
 for arg in "$@"; do
     case "$arg" in
         --with-sddm) WITH_SDDM=1 ;;
         --with-polkit) WITH_POLKIT=1 ;;
         --with-pkgs) INSTALL_PKGS=1 ;;
-        --all) WITH_SDDM=1; WITH_POLKIT=1; INSTALL_PKGS=1 ;;
+        --with-ai) WITH_AI="yes" ;;
+        --skip-ai) WITH_AI="no" ;;
+        --all) WITH_SDDM=1; WITH_POLKIT=1; INSTALL_PKGS=1; WITH_AI="yes" ;;
         -h|--help)
             cat <<USAGE
 Usage: ./install.sh [OPTIONS]
   --with-pkgs     Install recommended Arch/CachyOS runtime dependencies via pacman
+  --with-ai       Install Antigravity CLI (agy) without prompting (default: prompt [Y/n])
+  --skip-ai       Skip Antigravity CLI installation
   --with-sddm     Install & activate the Caelestia SDDM login theme
   --with-polkit   Configure passwordless pkexec for optimization/update UI actions
   --all           Enable all of the above
@@ -110,12 +115,51 @@ if (( WITH_POLKIT == 1 )); then
     sudo chmod 0644 /etc/polkit-1/rules.d/10-caelestia.rules
 fi
 
-echo "[5/5] Enabling core services..."
+echo "[5/6] Installing Antigravity CLI (Meow AI Engine)..."
+export PATH="$HOME/.local/bin:$PATH"
+if command -v agy >/dev/null 2>&1; then
+    echo "  -> Antigravity CLI already installed ($(agy --version 2>/dev/null | head -n1 || echo 'ready'))."
+else
+    INSTALL_AGY=0
+    if [[ "$WITH_AI" == "yes" ]]; then
+        INSTALL_AGY=1
+    elif [[ "$WITH_AI" == "prompt" ]]; then
+        if [[ -t 0 ]]; then
+            read -r -p "  ? Install Antigravity CLI (agy) for Meow AI Automation? [Y/n] " ans_ai
+            case "${ans_ai:-Y}" in
+                [nN]|[nN][oO]) INSTALL_AGY=0 ;;
+                *) INSTALL_AGY=1 ;;
+            esac
+        else
+            # Non-interactive pipe defaults to Yes just like recommended options
+            INSTALL_AGY=1
+        fi
+    fi
+
+    if (( INSTALL_AGY == 1 )); then
+        echo "  -> Installing Antigravity CLI via official installer..."
+        if command -v curl >/dev/null 2>&1 && curl -fsSL https://antigravity.google/cli/install.sh | bash; then
+            "$HOME/.local/bin/agy" install --skip-aliases >/dev/null 2>&1 || true
+        elif command -v paru >/dev/null 2>&1; then
+            paru -S --needed --noconfirm antigravity-cli || true
+        elif command -v yay >/dev/null 2>&1; then
+            yay -S --needed --noconfirm antigravity-cli || true
+        else
+            echo "  ! Unable to auto-install agy (curl/paru missing). You can install inside Nexus -> AI Automation."
+        fi
+    else
+        echo "  -> Skipped Antigravity CLI installation."
+    fi
+fi
+
+echo "[6/6] Enabling core services..."
 sudo systemctl enable --now power-profiles-daemon.service >/dev/null 2>&1 || true
 sudo systemctl enable --now fstrim.timer >/dev/null 2>&1 || true
 sudo systemctl enable --now ananicy-cpp.service >/dev/null 2>&1 || true
 systemctl list-unit-files scx_loader.service >/dev/null 2>&1 && sudo systemctl enable --now scx_loader.service >/dev/null 2>&1 || true
+systemctl --user enable --now ydotool.service >/dev/null 2>&1 || true
 
 echo ""
 echo "Installation complete! Reload shell with:"
 echo "  pkill -x qs; caelestia shell -d"
+echo "If you installed Antigravity CLI for the first time, run 'agy' once to sign in."
