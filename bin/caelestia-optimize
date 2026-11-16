@@ -1,0 +1,347 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+find_hwmon() {
+    local target="$1"
+    for h in /sys/class/hwmon/hwmon*; do
+        if [[ -r "$h/name" ]] && [[ "$(<"$h/name")" == "$target" ]]; then
+            echo "$h"
+            return 0
+        fi
+    done
+    return 1
+}
+
+root_block_dev() {
+    local src pk
+    src=$(findmnt -no SOURCE / 2>/dev/null || true)
+    pk=$(lsblk -no PKNAME "$src" 2>/dev/null | head -n1 || true)
+    if [[ -n "$pk" && -d "/sys/block/$pk" ]]; then
+        echo "$pk"
+    else
+        ls /sys/block 2>/dev/null | grep -E '^(nvme|sd|vd)' | head -n1 || echo "nvme0n1"
+    fi
+}
+
+clamp_pct() {
+    local v="$1"
+    if ! [[ "$v" =~ ^-?[0-9]+$ ]]; then
+        echo 0
+        return
+    fi
+    if (( v < 0 )); then echo 0
+    elif (( v > 100 )); then echo 100
+    else echo "$v"
+    fi
+}
+
+pct_to_pwm() {
+    local pct
+    pct=$(clamp_pct "$1")
+    if (( pct == 0 )); then
+        echo 0
+    else
+        echo $(( 40 + (pct * 215) / 100 ))
+    fi
+}
+
+apply_cpu_tuning() {
+    local mode="$1" # power-saver | balanced | balanced-cool | performance | gmode
+    local max_hw epp cap boost
+    max_hw=$(cat /sys/devices/system/cpu/cpufreq/policy0/cpuinfo_max_freq 2>/dev/null || echo 0)
+    (( max_hw == 0 )) && return 0
+
+    epp="balance_performance"
+    cap="$max_hw"
+    boost=1
+
+    case "$mode" in
+        power-saver)
+            epp="power"
+            cap=$(( max_hw * 58 / 100 ))
+            (( cap < 1800000 )) && cap=1800000
+            boost=0
+            ;;
+        balanced-cool)
+            epp="balance_power"
+            cap=$(( max_hw * 80 / 100 ))
+            (( cap < 2400000 )) && cap=2400000
+            boost=1
+            ;;
+        balanced)
+            epp="balance_performance"
+            cap="$max_hw"
+            boost=1
+            ;;
+        performance|gmode)
+            epp="performance"
+            cap="$max_hw"
+            boost=1
+            ;;
+    esac
+
+    if [[ -w /sys/devices/system/cpu/cpufreq/boost ]]; then
+        echo "$boost" > /sys/devices/system/cpu/cpufreq/boost 2>/dev/null || true
+    fi
+    for p in /sys/devices/system/cpu/cpufreq/policy*; do
+        [[ -w "$p/scaling_max_freq" ]] && echo "$cap" > "$p/scaling_max_freq" 2>/dev/null || true
+        [[ -w "$p/energy_performance_preference" ]] && echo "$epp" > "$p/energy_performance_preference" 2>/dev/null || true
+    done
+}
+
+set_dell_pwm() {
+    local cb_pct gpu_pct dsmm aw
+    cb_pct=$(clamp_pct "$1")
+    gpu_pct=$(clamp_pct "$2")
+    dsmm=$(find_hwmon "dell_smm" || true)
+    aw=$(find_hwmon "alienware_wmi" || true)
+
+    if [[ -n "$dsmm" ]]; then
+        if (( cb_pct == 0 )); then
+            echo 2 > "$dsmm/pwm1_enable" 2>/dev/null || true
+        else
+            echo 1 > "$dsmm/pwm1_enable" 2>/dev/null || true
+            echo "$(pct_to_pwm "$cb_pct")" > "$dsmm/pwm1" 2>/dev/null || true
+        fi
+
+        if (( gpu_pct == 0 )); then
+            echo 2 > "$dsmm/pwm2_enable" 2>/dev/null || true
+        else
+            echo 1 > "$dsmm/pwm2_enable" 2>/dev/null || true
+            echo "$(pct_to_pwm "$gpu_pct")" > "$dsmm/pwm2" 2>/dev/null || true
+        fi
+    fi
+
+    if [[ -n "$aw" ]]; then
+        echo "$cb_pct" > "$aw/fan1_boost" 2>/dev/null || true
+        echo "$gpu_pct" > "$aw/fan2_boost" 2>/dev/null || true
+    fi
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+    thermal)
+        mode="${1:-balanced}"
+        cb_arg="${2:-}"
+        gb_arg="${3:-}"
+        cool_flag="${4:-1}"
+
+        case "$mode" in
+            balanced)
+                powerprofilesctl set balanced 2>/dev/null || true
+                sleep 0.15
+                if [[ "$cool_flag" == "1" ]]; then
+                    apply_cpu_tuning "balanced-cool"
+                else
+                    apply_cpu_tuning "balanced"
+                fi
+                set_dell_pwm 0 0
+                ;;
+            performance)
+                powerprofilesctl set performance 2>/dev/null || true
+                sleep 0.15
+                apply_cpu_tuning "performance"
+                cb=$(clamp_pct "${cb_arg:-0}")
+                gb=$(clamp_pct "${gb_arg:-0}")
+                set_dell_pwm "$cb" "$gb"
+                ;;
+            gmode)
+                powerprofilesctl set performance 2>/dev/null || true
+                sleep 0.15
+                apply_cpu_tuning "gmode"
+                set_dell_pwm 100 100
+                ;;
+            power-saver)
+                powerprofilesctl set power-saver 2>/dev/null || true
+                sleep 0.15
+                apply_cpu_tuning "power-saver"
+                set_dell_pwm 0 0
+                ;;
+            *)
+                echo "ERR=unknown_thermal_mode"
+                exit 1
+                ;;
+        esac
+
+        sleep 0.2
+        pp=$(powerprofilesctl get 2>/dev/null || echo "unknown")
+        plat=$(cat /sys/firmware/acpi/platform_profile 2>/dev/null || echo "unknown")
+        epp_now=$(cat /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference 2>/dev/null || echo "unknown")
+        cap_now=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null || echo 0)
+        echo "OK|power_profile=$pp|platform_profile=$plat|epp=$epp_now|cap=$cap_now"
+        ;;
+
+    apply-power-tuning)
+        prof="${1:-balanced}"
+        cool_flag="${2:-1}"
+        sleep 0.2
+        if [[ "$prof" == "balanced" && "$cool_flag" == "1" ]]; then
+            apply_cpu_tuning "balanced-cool"
+        elif [[ "$prof" == "power-saver" ]]; then
+            apply_cpu_tuning "power-saver"
+        elif [[ "$prof" == "performance" ]]; then
+            apply_cpu_tuning "performance"
+        else
+            apply_cpu_tuning "balanced"
+        fi
+        epp_now=$(cat /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference 2>/dev/null || echo "unknown")
+        cap_now=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null || echo 0)
+        echo "OK|tuned=$prof|epp=$epp_now|cap=$cap_now"
+        ;;
+
+    auto-cool)
+        level="${1:-0}"
+        dsmm=$(find_hwmon "dell_smm" || true)
+        if [[ -n "$dsmm" ]]; then
+            case "$level" in
+                0)
+                    echo 2 > "$dsmm/pwm1_enable" 2>/dev/null || true
+                    echo 2 > "$dsmm/pwm2_enable" 2>/dev/null || true
+                    ;;
+                1)
+                    echo 1 > "$dsmm/pwm1_enable" 2>/dev/null || true
+                    echo 1 > "$dsmm/pwm2_enable" 2>/dev/null || true
+                    echo 45 > "$dsmm/pwm1" 2>/dev/null || true
+                    echo 45 > "$dsmm/pwm2" 2>/dev/null || true
+                    ;;
+                2)
+                    echo 1 > "$dsmm/pwm1_enable" 2>/dev/null || true
+                    echo 1 > "$dsmm/pwm2_enable" 2>/dev/null || true
+                    echo 62 > "$dsmm/pwm1" 2>/dev/null || true
+                    echo 52 > "$dsmm/pwm2" 2>/dev/null || true
+                    ;;
+            esac
+        fi
+        echo "OK|auto_cool=$level"
+        ;;
+
+    fan-boost)
+        cb=$(clamp_pct "${1:-0}")
+        gb=$(clamp_pct "${2:-0}")
+        set_dell_pwm "$cb" "$gb"
+        sleep 0.2
+        dsmm=$(find_hwmon "dell_smm" || true)
+        rpm1=$( [[ -n "$dsmm" && -r "$dsmm/fan1_input" ]] && cat "$dsmm/fan1_input" || echo 0 )
+        rpm2=$( [[ -n "$dsmm" && -r "$dsmm/fan2_input" ]] && cat "$dsmm/fan2_input" || echo 0 )
+        echo "OK|cpu_boost=$cb|gpu_boost=$gb|cpu_rpm=$rpm1|gpu_rpm=$rpm2"
+        ;;
+
+    cpu-boost)
+        val="${1:-1}"
+        [[ "$val" == "0" || "$val" == "1" ]] || { echo "ERR=invalid_boost"; exit 1; }
+        if [[ -w /sys/devices/system/cpu/cpufreq/boost ]]; then
+            echo "$val" > /sys/devices/system/cpu/cpufreq/boost
+            echo "OK|cpu_turbo=$(cat /sys/devices/system/cpu/cpufreq/boost)"
+        else
+            echo "ERR=cpufreq_boost_unwritable"
+            exit 1
+        fi
+        ;;
+
+    io-scheduler)
+        dev="${1:-$(root_block_dev)}"
+        sched="${2:-kyber}"
+        [[ "$dev" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "ERR=invalid_dev"; exit 1; }
+        [[ "$sched" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "ERR=invalid_sched"; exit 1; }
+        qfile="/sys/block/$dev/queue/scheduler"
+        if [[ ! -w "$qfile" ]]; then
+            dev="$(root_block_dev)"
+            qfile="/sys/block/$dev/queue/scheduler"
+        fi
+        if [[ ! -w "$qfile" ]]; then
+            echo "ERR=scheduler_unwritable"
+            exit 1
+        fi
+        echo "$sched" > "$qfile" 2>/dev/null || true
+        echo "OK|io_scheduler=$sched|dev=$dev"
+        ;;
+
+    scx-boot)
+        action="${1:-enable}"
+        sched="${2:-lavd}"
+        mode="${3:-Auto}"
+        if [[ "$action" == "enable" ]]; then
+            cat > /etc/scx_loader.toml <<TOML
+default_sched = "scx_${sched#scx_}"
+default_mode = "${mode}"
+TOML
+            systemctl enable --now scx_loader.service >/dev/null 2>&1 || true
+            echo "OK|scx_boot=enabled|sched=$sched|mode=$mode"
+        else
+            rm -f /etc/scx_loader.toml
+            systemctl disable scx_loader.service >/dev/null 2>&1 || true
+            echo "OK|scx_boot=disabled"
+        fi
+        ;;
+
+    deep-optimize)
+        target_user="${PKEXEC_UID:+$(getent passwd "$PKEXEC_UID" | cut -d: -f6)}"
+        user_home="${target_user:-${HOME:-/tmp}}"
+        do_pacman=0
+        do_trim=0
+        do_trash=0
+        for arg in "$@"; do
+            case "$arg" in
+                --user-home=*) user_home="${arg#*=}" ;;
+                --pacman) do_pacman=1 ;;
+                --trim) do_trim=1 ;;
+                --trash) do_trash=1 ;;
+            esac
+        done
+
+        mem_before=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+        disk_used_before=$(df -Pk / | awk 'NR==2 {print $3}')
+
+        echo "STAGE|0.15|Syncing disks & reclaiming kernel memory cache"
+        sync
+        echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+        echo 1 > /proc/sys/vm/compact_memory 2>/dev/null || true
+
+        echo "STAGE|0.35|Cleaning stale downloads & old package caches"
+        find /var/cache/pacman/pkg -maxdepth 1 -type d -name 'download-*' -exec rm -rf {} + 2>/dev/null || true
+        if (( do_pacman == 1 )) && command -v paccache >/dev/null 2>&1; then
+            paccache -rk2 -q 2>/dev/null || true
+            paccache -ruk0 -q 2>/dev/null || true
+        fi
+
+        echo "STAGE|0.55|Vacuuming systemd journal & thumbnail caches"
+        if [[ -d "$user_home/.cache/thumbnails" ]]; then
+            rm -rf "$user_home/.cache/thumbnails/"* 2>/dev/null || true
+        fi
+        if (( do_trash == 1 )) && [[ -d "$user_home/.local/share/Trash" ]]; then
+            rm -rf "$user_home/.local/share/Trash/files/"* "$user_home/.local/share/Trash/info/"* 2>/dev/null || true
+        fi
+        journalctl --vacuum-size=80M >/dev/null 2>&1 || true
+
+        echo "STAGE|0.75|Resetting failed systemd units & verifying daemons"
+        systemctl reset-failed >/dev/null 2>&1 || true
+        if systemctl list-unit-files ananicy-cpp.service >/dev/null 2>&1; then
+            systemctl is-active --quiet ananicy-cpp.service || systemctl start ananicy-cpp.service >/dev/null 2>&1 || true
+        fi
+
+        echo "STAGE|0.90|Running SSD TRIM & computing reclaimed space"
+        if (( do_trim == 1 )) && command -v fstrim >/dev/null 2>&1; then
+            fstrim -av >/dev/null 2>&1 || true
+        fi
+
+        mem_after=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+        disk_used_after=$(df -Pk / | awk 'NR==2 {print $3}')
+        reclaimed_kib=$(( mem_after - mem_before ))
+        (( reclaimed_kib < 0 )) && reclaimed_kib=0
+        disk_freed_kib=$(( disk_used_before - disk_used_after ))
+        (( disk_freed_kib < 0 )) && disk_freed_kib=0
+        reclaimed_mib=$(( reclaimed_kib / 1024 ))
+        disk_freed_mib=$(( disk_freed_kib / 1024 ))
+        mem_avail_mib=$(( mem_after / 1024 ))
+        failed_cnt=$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l)
+
+        echo "RESULT|reclaimed_mib=${reclaimed_mib}|disk_freed_mib=${disk_freed_mib}|mem_avail_mib=${mem_avail_mib}|failed_units=${failed_cnt}"
+        ;;
+
+    *)
+        echo "ERR=unknown_command"
+        exit 1
+        ;;
+esac

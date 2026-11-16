@@ -1,0 +1,208 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Layouts
+import Quickshell
+import Caelestia.Config
+import Caelestia.I18n
+import qs.components
+import qs.components.controls
+import qs.services
+import qs.utils
+import qs.modules.nexus
+
+ItemList {
+    id: root
+
+    required property NexusState nState
+    property int limit: 0 // 0 = show all
+    property bool enableFilter
+
+    signal networkSelected(ap: Nmcli.AccessPoint)
+
+    function networkFilter(ap: Nmcli.AccessPoint): bool {
+        return true;
+    }
+
+    showList: Nmcli.wifiEnabled
+    placeholderIcon: Nmcli.wifiEnabled ? "wifi_find" : "signal_wifi_off"
+    placeholderText: Nmcli.wifiEnabled ? Tr.tr("No networks found") : Tr.tr("Wi-Fi disabled")
+    extraHeight: Nmcli.scanning ? Tokens.rounding.extraSmall : 0 // Inline so it isn't affected by anim
+    list.anchors.top: scanningIndicator.bottom
+
+    model: ScriptModel {
+        values: {
+            const connecting = Nmcli.connectingSsid();
+            // Lower rank sorts higher in the list
+            const rank = n => n.active ? 0 : n.ssid === connecting ? 1 : Nmcli.hasSavedProfile(n.ssid) ? 2 : 3;
+            const sorted = [...Nmcli.networks].sort((a, b) => rank(a) - rank(b) || b.strength - a.strength);
+            if (root.limit > 0 && sorted.length > root.limit)
+                sorted.length = root.limit;
+            return root.enableFilter ? sorted.filter(root.networkFilter) : sorted;
+        }
+    }
+
+    delegate: StateLayer {
+        id: network
+
+        required property int index
+        required property var modelData
+        property bool currentSelected
+        property real textOpacity: disabled ? 0.5 : 1
+
+        disabled: currentSelected || Nmcli.connectingSsid() === modelData.ssid
+
+        anchors.left: root.list.contentItem.left
+        anchors.right: root.list.contentItem.right
+        implicitHeight: networkLayout.implicitHeight + networkLayout.anchors.margins * 2
+        radius: Tokens.rounding.extraSmall
+        bottomLeftRadius: root?.last && index === root.list.count - 1 ? Tokens.rounding.extraLarge : radius
+        bottomRightRadius: root?.last && index === root.list.count - 1 ? Tokens.rounding.extraLarge : radius
+        anchors.fill: undefined
+
+        onClicked: {
+            if (!modelData.active) {
+                currentSelected = true;
+                root.networkSelected(modelData);
+                NetworkConnection.handleConnect(modelData, null, net => {
+                    network.currentSelected = false;
+                    root.nState.selectedNetworkSsid = net.ssid;
+                    root.nState.openSubPage(7); // ConnectWifiPage
+                }, result => {
+                    network.currentSelected = false;
+                });
+            } else {
+                // Active network: open its detail/settings sub-page.
+                root.nState.selectedNetworkSsid = modelData.ssid;
+                root.nState.networkDetailsFromSaved = false;
+                root.nState.openSubPage(3);
+            }
+        }
+
+        Behavior on textOpacity {
+            Anim {
+                type: Anim.DefaultEffects
+            }
+        }
+
+        Connections {
+            function onActiveChanged(): void {
+                if (network.modelData.active)
+                    network.currentSelected = false;
+            }
+
+            target: network.modelData
+        }
+
+        Connections {
+            function onNetworkSelected(ap: Nmcli.AccessPoint): void {
+                if (ap !== network.modelData)
+                    network.currentSelected = false;
+            }
+
+            target: root
+        }
+
+        RowLayout {
+            id: networkLayout
+
+            anchors.fill: parent
+            anchors.margins: Tokens.padding.large
+            anchors.leftMargin: Tokens.padding.extraLarge
+            anchors.rightMargin: Tokens.padding.extraLarge
+            spacing: Tokens.spacing.medium
+
+            MaterialIcon {
+                text: Icons.getNetworkIcon(network.modelData.strength)
+                color: network.modelData.active ? Colours.palette.m3primary : Colours.palette.m3onSurfaceVariant
+                fontStyle: Tokens.font.icon.medium
+                opacity: network.textOpacity
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 0
+                opacity: network.textOpacity
+
+                StyledText {
+                    Layout.fillWidth: true
+                    text: network.modelData.ssid
+                    font: Tokens.font.body.small
+                    elide: Text.ElideRight
+                }
+
+                StyledText {
+                    Layout.fillWidth: true
+                    text: {
+                        const net = network.modelData;
+                        const band = net.frequency >= 4900 ? "5 GHz" : (net.frequency >= 2400 ? "2.4 GHz" : "");
+                        const secText = net.security || Tr.trCtx("Open", "wifi security type");
+                        const bandPrefix = band ? `${band} • ` : "";
+                        let status = "";
+                        if (net.active)
+                            status = Tr.trCtx("Connected", "network connected");
+                        else if (Nmcli.hasSavedProfile(net.ssid))
+                            status = Tr.trCtx("Saved", "network saved");
+                        if (status)
+                            return `${bandPrefix}${Tr.trCtx("Security: %1 • %2", "network security and status").arg(secText).arg(status)}`;
+                        return `${bandPrefix}${Tr.trCtx("Security: %1", "network security").arg(secText)}`;
+                    }
+                    color: Colours.palette.m3outline
+                    font: Tokens.font.label.small
+                    elide: Text.ElideRight
+                }
+            }
+
+            IconButton {
+                visible: !network.modelData.active && Nmcli.hasSavedProfile(network.modelData.ssid)
+                type: IconButton.Text
+                isRound: true
+                icon: "settings"
+                onClicked: {
+                    root.nState.selectedNetworkSsid = network.modelData.ssid;
+                    root.nState.networkDetailsFromSaved = true;
+                    root.nState.openSubPage(3);
+                }
+            }
+
+            AnimLoader {
+                sourceComp: (network.currentSelected || Nmcli.connectingSsid() === network.modelData.ssid) ? loadingComp : iconComp
+
+                Component {
+                    id: iconComp
+
+                    MaterialIcon {
+                        text: network.modelData.active ? "settings" : "lock"
+                        color: network.modelData.active ? Colours.palette.m3primary : Colours.palette.m3onSurfaceVariant
+                        fontStyle: Tokens.font.icon.medium
+                        opacity: network.textOpacity
+                    }
+                }
+
+                Component {
+                    id: loadingComp
+
+                    LoadingIndicator {
+                        implicitSize: Math.round(Tokens.font.icon.medium.pointSize * 1.3)
+                    }
+                }
+            }
+        }
+    }
+
+    StyledProgressBar {
+        id: scanningIndicator
+
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.margins: 1
+        implicitHeight: Nmcli.scanning ? Tokens.rounding.extraSmall : 0
+        indeterminate: true
+
+        Behavior on implicitHeight {
+            Anim {
+                type: Anim.DefaultEffects
+            }
+        }
+    }
+}

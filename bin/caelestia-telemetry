@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+find_hwmon() {
+    local target="$1"
+    for h in /sys/class/hwmon/hwmon*; do
+        if [[ -r "$h/name" ]] && [[ "$(<"$h/name")" == "$target" ]]; then
+            echo "$h"
+            return 0
+        fi
+    done
+    return 1
+}
+
+read_int() {
+    local f="$1" def="${2:-0}"
+    if [[ -r "$f" ]]; then
+        local v
+        v=$(<"$f")
+        echo "${v%% *}"
+    else
+        echo "$def"
+    fi
+}
+
+dir_kib() {
+    local d="$1"
+    if [[ -d "$d" ]]; then
+        { du -sk "$d" 2>/dev/null || true; } | awk 'NR==1 {print $1+0}'
+    else
+        echo 0
+    fi
+}
+
+root_block_dev() {
+    local src pk
+    src=$(findmnt -no SOURCE / 2>/dev/null || true)
+    pk=$(lsblk -no PKNAME "$src" 2>/dev/null | head -n1 || true)
+    if [[ -n "$pk" && -d "/sys/block/$pk" ]]; then
+        echo "$pk"
+    else
+        ls /sys/block 2>/dev/null | grep -E '^(nvme|sd|vd)' | head -n1 || echo "nvme0n1"
+    fi
+}
+
+# Memory
+eval "$(awk '
+    /^MemTotal:/ { t=$2 }
+    /^MemAvailable:/ { a=$2 }
+    END {
+        u = t - a; if (u < 0) u = 0;
+        pct = (t > 0) ? int((u * 100) / t + 0.5) : 0;
+        printf "mem_total_kib=%d\nmem_avail_kib=%d\nmem_used_kib=%d\nmem_pct=%d\n", t, a, u, pct
+    }
+' /proc/meminfo)"
+
+# ZRAM
+zram_line=$(zramctl --bytes --noheadings --output DISKSIZE,DATA,COMPR /dev/zram0 2>/dev/null || echo "0 0 0")
+read -r zram_disk zram_data zram_compr <<< "$zram_line"
+
+# Disk /
+read -r disk_used_kib disk_total_kib disk_pct <<< "$(df -Pk / | awk 'NR==2 { gsub("%","",$5); print $3, $2, $5 }')"
+
+# CPU freq/boost/EPP
+cpu_boost=$(read_int /sys/devices/system/cpu/cpufreq/boost 1)
+cpu_gov=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null || echo "powersave")
+cpu_epp=$(cat /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference 2>/dev/null || echo "balance_performance")
+cpu_max_khz=$(read_int /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 4200000)
+
+# Temps & Fans (AMD k10temp / Intel coretemp / ACPI + Dell/ThinkPad/ASUS hwmon)
+cpu_hm=$(find_hwmon "k10temp" || find_hwmon "coretemp" || find_hwmon "zenpower" || find_hwmon "acpitz" || true)
+aw=$(find_hwmon "alienware_wmi" || true)
+dsmm=$(find_hwmon "dell_smm" || true)
+tp=$(find_hwmon "thinkpad" || true)
+amd=$(find_hwmon "amdgpu" || true)
+
+cpu_temp=0
+if [[ -n "$cpu_hm" && -r "$cpu_hm/temp1_input" ]]; then
+    cpu_temp=$(( $(<"$cpu_hm/temp1_input") / 1000 ))
+fi
+amd_temp=0
+if [[ -n "$amd" && -r "$amd/temp1_input" ]]; then
+    amd_temp=$(( $(<"$amd/temp1_input") / 1000 ))
+fi
+sodimm_temp=0
+if [[ -n "$dsmm" && -r "$dsmm/temp3_input" ]]; then
+    sodimm_temp=$(( $(<"$dsmm/temp3_input") / 1000 ))
+fi
+
+cpu_fan_rpm=0; gpu_fan_rpm=0; cpu_fan_max=4700; gpu_fan_max=4400; cpu_fan_boost=0; gpu_fan_boost=0
+if [[ -n "$dsmm" ]]; then
+    cpu_fan_rpm=$(read_int "$dsmm/fan1_input" 0)
+    gpu_fan_rpm=$(read_int "$dsmm/fan2_input" 0)
+elif [[ -n "$tp" ]]; then
+    cpu_fan_rpm=$(read_int "$tp/fan1_input" 0)
+fi
+if [[ -n "$aw" ]]; then
+    (( cpu_fan_rpm == 0 )) && cpu_fan_rpm=$(read_int "$aw/fan1_input" 0)
+    (( gpu_fan_rpm == 0 )) && gpu_fan_rpm=$(read_int "$aw/fan2_input" 0)
+    cpu_fan_max=$(read_int "$aw/fan1_max" 4700)
+    gpu_fan_max=$(read_int "$aw/fan2_max" 4400)
+    cpu_fan_boost=$(read_int "$aw/fan1_boost" 0)
+    gpu_fan_boost=$(read_int "$aw/fan2_boost" 0)
+fi
+
+plat_profile=$(cat /sys/firmware/acpi/platform_profile 2>/dev/null || echo "balanced")
+
+# SCX Scheduler
+scx_sched="eevdf"
+scx_mode="Default"
+if command -v scxctl >/dev/null 2>&1; then
+    scx_raw=$(scxctl get 2>/dev/null || echo "none")
+    if [[ "$scx_raw" =~ running[[:space:]]+([A-Za-z0-9_]+)[[:space:]]+in[[:space:]]+([A-Za-z0-9_]+)[[:space:]]+mode ]]; then
+        scx_sched="${BASH_REMATCH[1],,}"
+        scx_mode="${BASH_REMATCH[2]}"
+    fi
+fi
+scx_boot=0
+[[ -f /etc/scx_loader.toml ]] && scx_boot=1
+
+# Root disk I/O scheduler (auto-detected)
+blk_dev=$(root_block_dev)
+io_raw=$(cat "/sys/block/$blk_dev/queue/scheduler" 2>/dev/null || echo "[kyber]")
+io_sched="kyber"
+if [[ "$io_raw" =~ \[([a-zA-Z0-9_-]+)\] ]]; then
+    io_sched="${BASH_REMATCH[1]}"
+fi
+io_avail=$(echo "$io_raw" | tr -d '[]' | xargs)
+
+# NVIDIA GPU (auto-detect PCI slot & avoid waking from D3cold)
+nv_temp=0; nv_util=0; nv_power="0 W (Sleep)"; nv_vram="0 / 0 MiB"; nv_pm="none"
+nv_dev=$(find /sys/bus/pci/drivers/nvidia -maxdepth 1 -name '0000:*' 2>/dev/null | head -n1 || true)
+if [[ -n "$nv_dev" && -r "$nv_dev/power/runtime_status" ]]; then
+    nv_pm=$(<"$nv_dev/power/runtime_status")
+fi
+if [[ "$nv_pm" == "active" ]] && command -v nvidia-smi >/dev/null 2>&1; then
+    nv_csv=$(nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,power.draw,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null || true)
+    if [[ -n "$nv_csv" ]]; then
+        IFS=',' read -r nt nu np nmu nmt <<< "$nv_csv"
+        nv_temp="${nt// /}"
+        nv_temp="${nv_temp%.*}"
+        nv_util="${nu// /}"
+        nv_power="${np// /} W"
+        nv_vram="${nmu// /} / ${nmt// /} MiB"
+    fi
+fi
+
+# Services
+is_act() { systemctl is-active --quiet "$1" && echo 1 || echo 0; }
+svc_ananicy=$(is_act ananicy-cpp.service)
+svc_oomd=$(is_act systemd-oomd.service)
+svc_power=$(is_act power-profiles-daemon.service)
+svc_scx=$(is_act scx_loader.service)
+svc_nv=$(is_act nvidia-powerd.service)
+svc_trim=$(is_act fstrim.timer)
+
+failed_units=$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l)
+
+thumb_kib=$(dir_kib "$HOME/.cache/thumbnails")
+trash_kib=$(dir_kib "$HOME/.local/share/Trash/files")
+pacman_kib=$(dir_kib "/var/cache/pacman/pkg")
+journal_str=$(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[KMGT]' | head -n1 || echo "0M")
+
+cat <<OUT
+MEM|total_kib=${mem_total_kib}|avail_kib=${mem_avail_kib}|used_kib=${mem_used_kib}|pct=${mem_pct}
+ZRAM|disk=${zram_disk:-0}|data=${zram_data:-0}|compr=${zram_compr:-0}
+DISK|used_kib=${disk_used_kib:-0}|total_kib=${disk_total_kib:-0}|pct=${disk_pct:-0}
+CPU|boost=${cpu_boost}|gov=${cpu_gov}|epp=${cpu_epp}|temp=${cpu_temp}|max_khz=${cpu_max_khz}
+SCX|sched=${scx_sched}|mode=${scx_mode}|boot=${scx_boot}
+THERMAL|profile=${plat_profile}|cpu_rpm=${cpu_fan_rpm}|gpu_rpm=${gpu_fan_rpm}|cpu_max=${cpu_fan_max}|gpu_max=${gpu_fan_max}|cpu_boost=${cpu_fan_boost}|gpu_boost=${gpu_fan_boost}|sodimm_temp=${sodimm_temp}
+GPU|amd_temp=${amd_temp}|nv_temp=${nv_temp:-0}|nv_util=${nv_util:-0}|nv_power=${nv_power}|nv_vram=${nv_vram}|nv_pm=${nv_pm}
+IO|sched=${io_sched}|avail=${io_avail}
+SVC|ananicy=${svc_ananicy}|oomd=${svc_oomd}|powerd=${svc_power}|scx=${svc_scx}|nvidia=${svc_nv}|fstrim=${svc_trim}|failed=${failed_units}
+CACHE|thumb_kib=${thumb_kib}|trash_kib=${trash_kib}|pacman_kib=${pacman_kib}|journal=${journal_str}
+OUT
+
+ps -eo pid=,rss=,%mem=,comm= --sort=-rss | head -n 4 | while read -r pid rss pmem comm; do
+    echo "PROC|pid=${pid}|name=${comm}|mib=$((rss / 1024))|pct=${pmem}"
+done

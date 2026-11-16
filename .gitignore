@@ -1,0 +1,8 @@
+*.bak
+*.tmp
+*~
+.DS_Store
+__pycache__/
+config/caelestia/caelestia-eq.conf
+config/caelestia/monitors/
+config/caelestia/AGENT_RULES.md

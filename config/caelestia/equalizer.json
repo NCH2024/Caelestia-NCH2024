@@ -1,0 +1,21 @@
+{
+  "enabled": true,
+  "activePreset": "cinema",
+  "preamp": 0,
+  "bassBoost": 7.5,
+  "trebleBoost": -4,
+  "volumeOverdrive": false,
+  "micNoiseCancel": true,
+  "bands": [
+    6,
+    5,
+    3,
+    1,
+    0,
+    1,
+    2,
+    4,
+    5,
+    4
+  ]
+}

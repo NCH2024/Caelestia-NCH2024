@@ -1,0 +1,12 @@
+{
+    "showDashboardTab": true,
+    "cleanPacman": true,
+    "cleanTrim": true,
+    "cleanTrash": false,
+    "autoRamThreshold": 85,
+    "preferredScxSched": "lavd",
+    "preferredScxMode": "Auto",
+    "lastReclaimedMiB": 364,
+    "lastDiskFreedMiB": 0,
+    "lastOptimizedTime": "14:51"
+}
