@@ -729,6 +729,15 @@ class Orchestrator:
         for j, s in enumerate(seq_specs):
             if self.stop_requested:
                 break
+            # Strict stage gate: halt downstream sequential stages if a preceding stage failed or was blocked
+            prior_failed = any(
+                (not r.get("ok"))
+                or bool(re.search(r"\b(blocked|unable to|cannot|could not|failed to|chưa thể|không thể|bị khóa|corked:\s*yes)\b", str(r.get("output", "")).lower()))
+                for r in results
+            )
+            if prior_failed:
+                self.logger.write(f"Halting sequential stage '{s.get('role_name')}' because prior stage failed verification.", "\033[33m")
+                break
             prior_ctx = "\n\n".join(
                 f"[{r['role_name']} ({'OK' if r['ok'] else 'ERR'})]:\n{r['output'][:1500]}"
                 for r in results
@@ -1095,11 +1104,11 @@ class Orchestrator:
         emit(
             "assistant_message",
             model="local-visual-fast",
-            title="Điều phối đa con trỏ (Siêu tốc)" if self.is_vi() else "Parallel Visual Fast-Path",
+            title="Điều phối đa bước có kiểm chứng" if self.is_vi() else "Verified Sequential Visual Pipeline",
             text=(
-                "Đang thực thi song song trên Trình duyệt và Bảng điều khiển bằng con trỏ trực quan."
+                "Đang thực thi tuần tự từng bước với con trỏ trực quan (chỉ chuyển bước & khóa khi bước trước đã xác minh)."
                 if self.is_vi()
-                else "Executing browser & system actions in parallel with live visual cursors."
+                else "Executing ordered visual stages sequentially (verifying each stage before proceeding)."
             ),
         )
         emit("phase", phase="working", progress=45, detail="Đang thao tác trực quan..." if self.is_vi() else "Executing visual actions...")
@@ -1107,12 +1116,38 @@ class Orchestrator:
         from urllib.parse import quote_plus
         from concurrent.futures import ThreadPoolExecutor
 
+        def firefox_active_title() -> str:
+            try:
+                out = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True).stdout
+                clients = json.loads(out)
+                ff = [c for c in clients if "firefox" in str(c.get("class", "")).lower()]
+                ff.sort(key=lambda c: int(c.get("focusHistoryID", 999)))
+                return str(ff[0].get("title", "")) if ff else ""
+            except Exception:
+                return ""
+
+        def firefox_audio_playing() -> tuple[bool, bool]:
+            """Return (has_firefox_sink, is_actively_playing_uncorked)."""
+            out = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True).stdout
+            has_sink = False
+            playing = False
+            for blk in out.split("Sink Input #"):
+                low_b = blk.lower()
+                if "firefox" in low_b:
+                    has_sink = True
+                    if "corked: no" in low_b:
+                        playing = True
+                        break
+            return has_sink, playing
+
         def run_browser_track() -> tuple[bool, str]:
             emit("engine_start", role="executor", label="Browser", model="local-visual")
             url = f"https://www.youtube.com/results?search_query={quote_plus(yt_query)}"
             subprocess.run(["caelestia-desktop", "launch", "firefox", url, "--agent", "Browser"], capture_output=True, text=True)
             emit("engine_step", worker="Browser", step=1, detail=f"Mở tìm kiếm YouTube: {yt_query}")
-            # Pick shortest clean keyword phrase (first 4 words) for reliable OCR match
+            time.sleep(0.5)
+            search_title = firefox_active_title()
+
             q_words = yt_query.split()
             click_kw = " ".join(q_words[:4]) if len(q_words) >= 2 else yt_query
             res_c = subprocess.run(
@@ -1121,54 +1156,58 @@ class Orchestrator:
                 text=True,
             )
             if res_c.returncode != 0 and len(q_words) >= 2:
-                # Fallback to last 2 words (e.g. artist name)
                 res_c = subprocess.run(
                     ["caelestia-desktop", "click-text", " ".join(q_words[-2:]), "--window", "firefox", "--wait", "2.0", "--agent", "Browser"],
                     capture_output=True,
                     text=True,
                 )
-            emit("engine_step", worker="Browser", step=2, detail="Click phát video & kiểm tra âm thanh")
-            time.sleep(1.5)
-            pactl_out = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True).stdout
-            is_corked = False
-            has_ff_audio = False
-            for blk in pactl_out.split("Sink Input #"):
-                if "firefox" in blk.lower():
-                    has_ff_audio = True
-                    if "corked: no" in blk.lower():
-                        is_corked = False
-                        break
-                    if "corked: yes" in blk.lower():
-                        is_corked = True
-            if (not has_ff_audio or is_corked) and res_c.returncode == 0:
-                subprocess.run(["caelestia-desktop", "focus", "firefox", "--agent", "Browser"], capture_output=True)
-                subprocess.run(["caelestia-desktop", "key", "k", "--agent", "Browser"], capture_output=True)
-                time.sleep(1.0)
-                pactl_out = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True).stdout
-                has_ff_audio = any("firefox" in b.lower() and "corked: no" in b.lower() for b in pactl_out.split("Sink Input #"))
             if res_c.returncode != 0:
                 return False, f"Chưa click được kết quả YouTube '{yt_query}'."
-            state_txt = "đang phát (`Corked: no`)" if has_ff_audio else "đã mở trang phát"
-            return True, f"Firefox YouTube (**{yt_query}**): đã tìm, click và {state_txt}."
+
+            emit("engine_step", worker="Browser", step=2, detail="Chờ video tự phát & xác minh âm thanh")
+            # Poll up to 4.5s for autoplay audio to start naturally BEFORE ever touching `k` (prevents play->pause race!)
+            has_sink, is_playing = False, False
+            cur_title = search_title
+            deadline = time.time() + 4.5
+            while time.time() < deadline:
+                cur_title = firefox_active_title()
+                has_sink, is_playing = firefox_audio_playing()
+                if is_playing:
+                    # Confirm it remains playing 0.5s later (not paused right after load)
+                    time.sleep(0.5)
+                    has_sink, is_playing = firefox_audio_playing()
+                    if is_playing:
+                        break
+                time.sleep(0.4)
+
+            # ONLY if we transitioned to a watch page AND audio is genuinely silent/corked after 4.5s, press `k` ONCE
+            watched_page = bool(cur_title and cur_title != search_title and "youtube" in cur_title.lower())
+            if not is_playing and watched_page:
+                emit("engine_step", worker="Browser", step=3, detail="Video chưa phát — gửi lệnh Play (k)")
+                subprocess.run(["caelestia-desktop", "focus", "firefox", "--agent", "Browser"], capture_output=True)
+                subprocess.run(["caelestia-desktop", "key", "k", "--agent", "Browser"], capture_output=True)
+                deadline2 = time.time() + 2.5
+                while time.time() < deadline2:
+                    has_sink, is_playing = firefox_audio_playing()
+                    if is_playing:
+                        break
+                    time.sleep(0.4)
+
+            if not is_playing:
+                return False, f"Video '{yt_query}' chưa phát âm thanh (`Corked: no` chưa kích hoạt)."
+            return True, f"Firefox YouTube (**{yt_query}**): đã mở và xác nhận đang phát (`Corked: no`)."
 
         def run_control_track() -> tuple[bool, list[str]]:
             emit("engine_start", role="executor", label="Control", model="local-visual")
             notes = []
             if mode_id:
-                if self.prefer_visual_cursor and not yt_query:
+                if self.prefer_visual_cursor:
                     subprocess.run(["caelestia", "shell", "nexus", "openPage", "0"], capture_output=True)
                     subprocess.run(
                         ["caelestia-desktop", "click-text", mode_label or mode_id, "--window", "quickshell", "--wait", "2.5", "--agent", "Control"],
                         capture_output=True,
                     )
-                else:
-                    # Show Control ghost cursor subtly without fighting Firefox window focus during YouTube OCR click
-                    subprocess.run(["caelestia", "shell", "modes", "activate", mode_id], capture_output=True)
-                    subprocess.Popen(
-                        ["qs", "-c", "caelestia", "ipc", "call", "ai", "cursorEvent", "1840", "140", "auto_awesome", f"Mode: {mode_id}", "1", "Control"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
+                subprocess.run(["caelestia", "shell", "modes", "activate", mode_id], capture_output=True)
                 emit("engine_step", worker="Control", step=1, detail=f"Chuyển chế độ -> {mode_id}")
                 notes.append(f"Chế độ hệ thống: **{mode_id}**")
             if brightness_pct is not None:
@@ -1189,24 +1228,28 @@ class Orchestrator:
             emit("cursor_done", agent="Control")
             return True, notes
 
+        # Strict sequential stage ordering: Stage 1 (Browser media verified playing) -> Stage 2 (Control/Mode/Brightness) -> Stage 3 (Lock Barrier)
+        has_control_ops = bool(mode_id or brightness_pct is not None or volume_pct is not None or mute_state is not None)
         summary_lines = []
-        browser_ok = True
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            fut_ctl = pool.submit(run_control_track) if (mode_id or brightness_pct is not None or volume_pct is not None or mute_state is not None) else None
-            fut_brw = pool.submit(run_browser_track) if yt_query else None
-            if fut_brw:
-                browser_ok, brw_msg = fut_brw.result()
-                summary_lines.append(f"- {brw_msg}")
-            if fut_ctl:
-                _, ctl_notes = fut_ctl.result()
-                for n in ctl_notes:
-                    summary_lines.append(f"- {n}")
+        if yt_query:
+            browser_ok, brw_msg = run_browser_track()
+            summary_lines.append(f"- {brw_msg}")
+            if not browser_ok:
+                # CRITICAL: Do NOT apply lock screen or downstream mode switch when Stage 1 playback failed!
+                self.logger.write(f"Tier 0.5 halted before Stage 2/Barrier: {brw_msg}", "\033[33m")
+                return None
 
-        if not browser_ok:
-            # Let LLM fallback handle tricky YouTube pages rather than giving up!
-            self.logger.write("Tier 0.5 browser click missed; handing off cleanly to AI tracks.", "\033[33m")
-            return None
+        if has_control_ops:
+            ctl_ok, ctl_notes = run_control_track()
+            for n in ctl_notes:
+                summary_lines.append(f"- {n}")
+            if not ctl_ok:
+                self.logger.write("Tier 0.5 halted before final barrier: Control track failed.", "\033[33m")
+                return None
 
+        if final_barrier:
+            # Brief beat so final cursor & verified status are visible before screen locks
+            time.sleep(0.5)
         barrier_msg = self.run_final_barrier(final_barrier)
         if barrier_msg:
             summary_lines.append(f"- {barrier_msg}")
@@ -1283,26 +1326,35 @@ class Orchestrator:
             if re.search(r"\b(cuối cùng|sau cùng|cuối|finally|then lock).*?(khóa màn hình|khóa máy|lock screen|lock)\b", low) or re.search(r"\b(khóa màn hình|lock screen)\b", low):
                 final_barrier = "lock"
             if self.allow_desktop and self.prefer_visual_cursor and has_browser and has_control:
-                self.logger.write(f"Local router -> parallel multi-cursor GUI tracks (Browser + Control, barrier={final_barrier}).", "\033[1;36m")
+                has_seq_order = bool(re.search(r"\b(sau đó|rồi|tiếp theo|cuối cùng|sau cùng|then|after that)\b", low))
+                ctl_parallel = not has_seq_order
+                self.logger.write(
+                    f"Local router -> multi-cursor GUI tracks (Browser + Control, sequential={has_seq_order}, barrier={final_barrier}).",
+                    "\033[1;36m",
+                )
                 barrier_warn = (
-                    " CRITICAL: Do NOT lock/sleep the screen yet — screen lock is handled automatically AFTER all tracks finish!"
+                    " CRITICAL: Do NOT lock/sleep the screen yet — screen lock is handled automatically ONLY AFTER all prior tracks pass verification!"
                     if final_barrier
                     else ""
                 )
                 multi_triage = {
                     "plan_summary": (
-                        "Đang điều phối đồng thời 2 con trỏ AI thao tác trên Trình duyệt và Bảng điều khiển."
-                        if self.is_vi()
-                        else "Operating Browser and Control Panel simultaneously with live visual cursors."
+                        "Đang điều phối tuần tự theo từng bước (kiểm chứng xong mới chuyển bước) với con trỏ trực quan."
+                        if has_seq_order and self.is_vi()
+                        else (
+                            "Đang điều phối đồng thời 2 con trỏ AI thao tác trên Trình duyệt và Bảng điều khiển."
+                            if self.is_vi()
+                            else "Operating Browser and Control Panel with live visual cursors."
+                        )
                     ),
-                    "success_criteria": "Both the browser action and control-panel/app action complete visually and are verified.",
+                    "success_criteria": "Browser playback/task and Control settings complete in order and pass verification.",
                     "collaborators": [
                         {
                             "role_name": "Browser",
                             "prompt": (
-                                "Handle ONLY the browser/web portion visually in 1-2 batched commands using `--agent Browser`: "
-                                "launch `https://www.youtube.com/results?search_query=<query>` (for YouTube) with `caelestia-desktop launch firefox \"...\" --agent Browser`, wait briefly, then run `caelestia-desktop click-text \"<song/title keyword>\" --window firefox --wait 5 --agent Browser` (NO homepage screenshots!). "
-                                "After clicking a YouTube video, wait 1.5s and verify Firefox audio via `pactl list sink-inputs | grep -E \"application.name|Corked\"` (if missing or `Corked: yes`, run `caelestia-desktop focus firefox --agent Browser && caelestia-desktop key k --agent Browser` and re-check `pactl`). NEVER use `playerctl` for Firefox!"
+                                "Handle ONLY the browser/web portion visually using `--agent Browser`: "
+                                "launch `https://www.youtube.com/results?search_query=<query>` (for YouTube) with `caelestia-desktop launch firefox \"...\" --agent Browser`, then run `caelestia-desktop click-text \"<song/title keyword>\" --window firefox --wait 5 --agent Browser`. "
+                                "IMPORTANT: Wait 3-4s for YouTube autoplay to buffer BEFORE touching `k` (otherwise pressing `k` pauses an auto-playing video!). Poll `pactl list sink-inputs` for `Corked: no`; ONLY press `key k` if still paused after 4s, and fail/report clearly if `Corked: no` is still not active. NEVER use `playerctl` for Firefox!"
                                 + barrier_warn
                             ),
                             "parallel": True,
@@ -1314,7 +1366,7 @@ class Orchestrator:
                                 "e.g., `caelestia shell nexus openPage 0 && caelestia-desktop click-text \"Cinema\" --window quickshell --wait 2.5 --agent Control && brightnessctl set 100%`, and verify final state (`extra.json`, `brightnessctl get`, etc.)."
                                 + barrier_warn
                             ),
-                            "parallel": True,
+                            "parallel": ctl_parallel,
                         },
                     ],
                 }
@@ -1340,7 +1392,8 @@ class Orchestrator:
         )
         triage_prompt = (
             "Decompose this complex request into 2-3 focused parallel/sequential specialist tracks.\n"
-            "Never add a redundant verifier worker (Coordinator audits afterwards). Use parallel=true for independent tracks.\n"
+            "Respect temporal dependencies ('sau đó', 'rồi', 'cuối cùng', 'then', 'after'): use parallel=false for dependent downstream stages so Stage N verifies before Stage N+1 runs.\n"
+            "Never add a redundant verifier worker (Coordinator audits afterwards). Use parallel=true only for truly independent tracks.\n"
             f"{self.language_instruction()}\n\n"
             f"USER REQUEST:\n{user_task}\n\n"
             'Respond ONLY with JSON: {"mode":"multi","plan_summary":"1 concise sentence","success_criteria":"verification checks","collaborators":[{"role_name":"","prompt":"","parallel":true}]}'
