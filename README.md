@@ -1,79 +1,76 @@
 <div align="center">
 
-<img src="config/quickshell/caelestia/assets/meow-logo.png" alt="Meow Remake Logo" width="150" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png" />
+  <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.png" />
+  <img alt="Caelestia x Meow Remake Logo" src="assets/logo-light.png" width="160" />
+</picture>
 
 # Caelestia × Meow Remake
 
-**A Material 3 Wayland Desktop Environment (`Hyprland` + `Quickshell`) enhanced with One-Click Smart Optimization, Adaptive Thermal & Fan Control, CachyOS `sched-ext`, 10-Band PipeWire Studio Equalizer, and a Unified Nexus Control Center.**
+**A Material 3 Wayland Desktop (`Hyprland` + `Quickshell`) with One-Click Optimization, Adaptive Cooling, Seamless System & Driver Updates, Modes & Routines, and a 10-Band Studio Equalizer.**
 
-[![Hyprland](https://img.shields.io/badge/Compositor-Hyprland-58E1FF?style=for-the-badge&logo=hyprland&logoColor=white)](https://hyprland.org/)
-[![Quickshell](https://img.shields.io/badge/Shell-Quickshell-A855F7?style=for-the-badge)](https://quickshell.outfoxxed.me/)
-[![CachyOS / Arch](https://img.shields.io/badge/OS-CachyOS%20%2F%20Arch%20Linux-1793D1?style=for-the-badge&logo=archlinux&logoColor=white)](https://cachyos.org/)
-[![Author](https://img.shields.io/badge/Remade%20by-Meow%20(%40NCH2024)-FF79C6?style=for-the-badge&logo=github&logoColor=white)](https://github.com/NCH2024)
+[![Hyprland](https://img.shields.io/badge/Hyprland-Wayland-58E1FF?style=flat-square&logo=hyprland&logoColor=white)](https://hyprland.org/)
+[![Quickshell](https://img.shields.io/badge/Shell-Quickshell-A855F7?style=flat-square)](https://quickshell.outfoxxed.me/)
+[![CachyOS / Arch](https://img.shields.io/badge/OS-CachyOS%20%2F%20Arch-1793D1?style=flat-square&logo=archlinux&logoColor=white)](https://cachyos.org/)
+[![Author](https://img.shields.io/badge/Made%20by-Meow%20(%40NCH2024)-FF79C6?style=flat-square&logo=github&logoColor=white)](https://github.com/NCH2024)
 
 </div>
 
 ---
 
-## Showcase
+## Highlights & New Features
 
-### Desktop & Top-Hover Smart Optimization
-
-<table>
-  <tr>
-    <td width="50%">
-      <img src="assets/screenshots/desktop.png" alt="Caelestia Desktop Overview" />
-      <p align="center"><sub><b>Clean Desktop & Audio Visualizer</b> — Dynamic Material 3 theming, clock/weather widget, and persistent side taskbar.</sub></p>
-    </td>
-    <td width="50%">
-      <img src="assets/screenshots/optimization-tab.png" alt="Top Hover Optimization Tab" />
-      <p align="center"><sub><b>Top-Hover Optimization Tab</b> — Placed directly before Weather: 100-point Health ring, 1-tap Quiet / Everyday / Max Speed presets, Max Fan Cooling, and Automatic Care.</sub></p>
-    </td>
-  </tr>
-</table>
-
-### Nexus Control Center (`Mod + ,` / Sidebar Settings)
-
-<table>
-  <tr>
-    <td width="33.3%">
-      <img src="assets/screenshots/nexus-device-care.png" alt="Nexus Power, Fans & Device Care" />
-      <p align="center"><sub><b>Power, Fans & Care</b> — Live CachyOS <code>scx_loader</code> scheduler, CPU Turbo, NVMe I/O queue, Auto-RAM Guard, and Dell PWM fan curves.</sub></p>
-    </td>
-    <td width="33.3%">
-      <img src="assets/screenshots/nexus-equalizer.png" alt="Nexus Audio & Studio Equalizer" />
-      <p align="center"><sub><b>Audio & Studio Equalizer</b> — PipeWire 10-band DSP filter chain managed cleanly via <code>caelestia-eq.service</code> with 10 instant presets.</sub></p>
-    </td>
-    <td width="33.3%">
-      <img src="assets/screenshots/nexus-about.png" alt="About Caelestia x Meow" />
-      <p align="center"><sub><b>About (Caelestia × Meow)</b> — Co-branded hero emblem with adaptive Material 3 colorization and system hardware readout.</sub></p>
-    </td>
-  </tr>
-</table>
+- **Top-Hover Smart Optimization Tab** (right before **Weather**)
+  - Clean, beginner-friendly layout: **PC Health Ring**, **Boost & Clean Now**, and **3-tap Performance Presets** (**Quiet**, **Everyday**, **Max Speed**) plus a **Max Fan Cooling** toggle.
+  - Real staged cleanup underneath (`caelestia-optimize`): drops page cache, compacts RAM, cleans orphaned `pacman` download folders & old `paccache` versions, vacuums `journald`, resets failed systemd units, and runs NVMe `fstrim`.
+- **Anti-Heat Balanced Tuning & Adaptive Fan Curve**
+  - Eliminates hot idle laptop behavior (`balance_performance` 4 GHz spikes with `0 RPM` fans) using `balance_power` EPP + `80%` frequency cap and a whisper-quiet fan hysteresis (`≥ 61°C` gentle airflow, `≤ 53°C` silent auto).
+  - Configures iGPU-first Wayland compositing (`AQ_DRM_DEVICES`) and avoids waking sleeping NVIDIA dGPUs during telemetry polling.
+- **Seamless System Updates & Hardware Drivers (`Updates & Drivers`)**
+  - Unified GUI for **Official (`pacman`)**, **AUR (`paru`/`yay`)**, and **Flatpak** updates with non-blocking progress bars (`pkexec`) and expandable terminal output on click.
+  - Detects installed/recommended GPU & CPU microcode drivers (`chwd -a`), checks UEFI/device firmware (`fwupdmgr`), ranks CachyOS mirrors, and cleans orphan packages.
+- **Modes & Automated If/Then Routines (`Modes & Routines`)**
+  - Built-in usage profiles (**Balanced**, **Gaming & Turbo**, **Work & Focus**, **Developer**, **Cinema & Media**, **Night & Battery Saver**) that synchronize Power, Cooling, Equalizer, Game Mode, DND, and Night Light.
+  - Automatic triggers based on **time schedule**, **running app/game process**, or **Wi-Fi SSID**.
+- **10-Band PipeWire Studio Equalizer (`Audio & Studio Equalizer`)**
+  - Runs stably as a user `systemd-run` PipeWire filter chain (`caelestia-eq.service`) with 10 presets (*Cinema Surround*, *Bass Boost*, *Rock*, *Vocal*, *Gaming*, etc.), volume overdrive (`up to 150%`), channel balance, and mic noise cancellation.
+- **Complete System Control Center (`Nexus`)**
+  - **CachyOS `sched-ext` & Kernel Tuning:** Switch live between `EEVDF`, `scx_lavd`, `scx_bpfland`, `scx_cosmos`, and `scx_rusty`, NVMe I/O scheduler, CPU Turbo Boost, and Auto-RAM Guard.
+  - **Daemons, Timers & Disks:** Manage background systemd services, scheduled timers, top memory processes, partitions/`fstab`, Quick DNS (`1.1.1.1`, `8.8.8.8`, AdGuard), and Bluetooth codecs.
+  - **Unified Branding & Login:** Matching Caelestia **SDDM theme**, hang-free logout (`hyprctl dispatch exit`), and **Caelestia × Meow** About page.
 
 ---
 
-## What Makes This Remake Different?
+## Screenshots
 
-| Feature | What Changed vs Stock |
-| :--- | :--- |
-| **Smart Optimization Tab** | Added an everyday-friendly **Optimization** tab to the top-hover Dashboard drawer (right before **Weather**), with zero confusing kernel jargon on the surface while driving real sysfs/D-Bus controls underneath. |
-| **Anti-Heat Balanced Tuning** | Fixes hot laptop idle behavior (`4.0+ GHz` spikes & `0 RPM` BIOS fans) using `balance_power` EPP + `80%` frequency cap and an adaptive whisper-quiet fan hysteresis (`≥ 61°C` gentle airflow, `≤ 53°C` silent auto). |
-| **Optimus dGPU Power Saving** | Automatically configures `AQ_DRM_DEVICES` for iGPU-first compositing (`amdgpu`/`i915`/`xe`) and skips `nvidia-smi` polling while the dGPU is sleeping in D3cold. |
-| **CachyOS `sched-ext` Control** | Built-in `scxctl` D-Bus switching between Linux **EEVDF**, **`scx_lavd`**, **`scx_bpfland`**, **`scx_cosmos`**, and **`scx_rusty`** with optional boot persistence via `/etc/scx_loader.toml`. |
-| **Deep System Boost** | Real staged cleanup (`caelestia-optimize`): drops caches + compacts fragmented RAM, removes orphaned `pacman` `download-*` folders & old `paccache` versions, vacuums `journald`, resets failed units, and runs `fstrim` — reporting exact MiB reclaimed. |
-| **Studio 10-Band Equalizer** | Rewritten as a resilient user `systemd-run` PipeWire unit (`caelestia-eq.service`) so EQ presets (`Cinema Surround`, `Bass Boost`, `Rock`, `Gaming`, custom bands) survive sink switches reliably. |
-| **Single Source of Truth** | Top Dashboard, Quick Settings tiles, Top Bar care button, Modes & Routines, and Nexus Settings share unified state in `OptimizerService.qml` and `ExtraConfig.qml`. |
-| **100% English UI & Seamless Auth** | Clean, unified English Material 3 interface with non-blocking `pkexec` progress bars (`TaskRunner.qml`), expandable logs on demand, matching SDDM login theme, and hang-free Hyprland logout (`hyprctl dispatch exit`). |
+### Desktop & Top-Hover Optimization
+
+<p align="center">
+  <img src="assets/screenshots/desktop.png" alt="Desktop Overview" width="49%" />
+  <img src="assets/screenshots/optimization-tab.png" alt="Top-Hover Optimization Tab" width="49%" />
+</p>
+
+### Power, Cooling, Updates & Driver Center
+
+<p align="center">
+  <img src="assets/screenshots/nexus-device-care.png" alt="Power, Fans & Care" width="49%" />
+  <img src="assets/screenshots/nexus-updates.png" alt="Updates & Hardware Drivers" width="49%" />
+</p>
+
+### Modes & Routines, 10-Band Equalizer & About
+
+<p align="center">
+  <img src="assets/screenshots/nexus-modes.png" alt="Modes & Routines" width="32.5%" />
+  <img src="assets/screenshots/nexus-equalizer.png" alt="10-Band Studio Equalizer" width="32.5%" />
+  <img src="assets/screenshots/nexus-about.png" alt="About Caelestia x Meow" width="32.5%" />
+</p>
 
 ---
 
-## Prerequisites (Arch Linux / CachyOS)
-
-Install the required packages before running `./install.sh`:
+## Prerequisites (Arch / CachyOS)
 
 ```bash
-# Core Hyprland + Quickshell + Caelestia stack
 sudo pacman -S --needed \
   hyprland quickshell-git caelestia-cli \
   power-profiles-daemon pipewire wireplumber \
@@ -84,30 +81,30 @@ sudo pacman -S --needed \
 sudo pacman -S --needed scx-scheds scx-tools
 ```
 
-> **Arch / EndeavourOS Users:** If `quickshell-git` or `caelestia-cli` is not in your standard repositories, install them via AUR (`paru -S quickshell-git caelestia-cli`).
+> On standard Arch/EndeavourOS, install `quickshell-git` and `caelestia-cli` via AUR (`paru -S quickshell-git caelestia-cli`).
 
 ---
 
 ## Installation
+
+`install.sh` automatically backs up any existing configs (`*.bak-YYYYMMDD-HHMMSS`) before installing.
 
 ```bash
 git clone https://github.com/NCH2024/Caelestia-NCH2024.git
 cd Caelestia-NCH2024
 chmod +x install.sh bin/*
 
-# 1. Standard install (configs + /usr/local/bin/caelestia-{optimize,telemetry}):
+# Option A: User configs + hardware helpers only
 ./install.sh
 
-# 2. Recommended full install (also sets up Caelestia SDDM login theme & seamless Polkit):
+# Option B: Recommended (adds matching SDDM login theme + passwordless Polkit actions)
 ./install.sh --with-sddm --with-polkit
 
-# 3. Everything including pacman dependency check:
+# Option C: Full automated setup including pacman dependencies
 ./install.sh --all
 ```
 
-> **Safety First:** `install.sh` automatically backs up any existing `~/.config/quickshell/caelestia`, `~/.config/hypr`, and `~/.config/caelestia` files with a timestamp (`*.bak-YYYYMMDD-HHMMSS`) before copying.
-
-Start or reload the shell after installation:
+Reload the shell after installation:
 
 ```bash
 pkill -x qs; caelestia shell -d
@@ -115,99 +112,52 @@ pkill -x qs; caelestia shell -d
 
 ---
 
-## Cross-Hardware Adaptation Guide
+## Adapting to Different Hardware
 
-This setup was tuned on a **Dell G15 5515 (`AMD Ryzen 5 5600H` + `NVIDIA RTX 3050` + `NVMe`)** running CachyOS. Both `bin/caelestia-telemetry` and `bin/caelestia-optimize` auto-detect sensors dynamically, and `install.sh` adapts most settings automatically — review these notes if your hardware differs:
+Tuned on a **Dell G15 5515 (`AMD Ryzen 5 5600H` + `NVIDIA RTX 3050` + `NVMe`)** running CachyOS. Most sensors auto-detect automatically — check these items if your hardware differs:
 
-<details>
-<summary><b>1. GPU & Display Compositing (Hybrid Optimus vs Single GPU)</b></summary>
+### 1. GPU Setup
+- **Hybrid Laptops (AMD/Intel iGPU + NVIDIA dGPU):** `install.sh` auto-detects `/dev/dri/by-path/*-card` and writes `AQ_DRM_DEVICES` to `~/.config/hypr/hyprland/env.lua` so Hyprland composites on the iGPU while allowing the dGPU to sleep.
+- **AMD-only or Intel-only:** `install.sh` sets `"gpuType": "None"` in `~/.config/caelestia/shell.json`. You can set `"Amd"` for AMD monitoring.
+- **NVIDIA Desktop (Single GPU):** Remove any `AQ_DRM_DEVICES` line in `env.lua` and add `GBM_BACKEND=nvidia-drm` / `__GLX_VENDOR_LIBRARY_NAME=nvidia` if needed.
 
-- **Hybrid Laptops (`AMD/Intel iGPU + NVIDIA dGPU`):**
-  `install.sh` inspects `/dev/dri/by-path/*-card` and automatically appends `hl.env("AQ_DRM_DEVICES", "<igpu>:<dgpu>")` to `~/.config/hypr/hyprland/env.lua` so Hyprland composites strictly on your iGPU while allowing the NVIDIA card to enter D3cold (`0 W`).
-  - Verify RTD3 power management is enabled in `/etc/modprobe.d/` (`options nvidia NVreg_DynamicPowerManagement=0x02` if needed).
-- **AMD-Only or Intel-Only Laptops / Desktops:**
-  Set `"gpuType": "None"` (or `"Amd"`) under `"services"` in `~/.config/caelestia/shell.json` (`install.sh` sets this automatically when no NVIDIA card is found).
-- **NVIDIA-Only Desktop:**
-  Ensure `AQ_DRM_DEVICES` is not forcing a non-existent iGPU in `~/.config/hypr/hyprland/env.lua`, and add `GBM_BACKEND=nvidia-drm` / `__GLX_VENDOR_LIBRARY_NAME=nvidia` if driving displays directly from the NVIDIA GPU.
+### 2. CPU & Kernel Schedulers
+- **Sensors:** `caelestia-telemetry` auto-detects `k10temp` / `zenpower` (AMD), `coretemp` (Intel), and `acpitz`.
+- **Balanced Cap:** If `80%` max frequency in **Cool & quiet balanced tuning** feels conservative on older Intel CPUs, toggle it off directly in the **Optimization** tab.
+- **No `scx-scheds`:** If `scxctl` is absent or kernel `< 6.12`, CPU scheduling cleanly falls back to standard Linux **EEVDF**.
 
-</details>
+### 3. Laptop Fan Control
+- **Dell (`dell_smm` + `alienware_wmi`):** Full adaptive Balanced cooling (`auto-cool`) and manual CPU/GPU % sliders work out of the box.
+- **ThinkPad (`thinkpad_hwmon`):** Fan RPM telemetry works automatically (manual fan speed requires `options thinkpad_acpi fan_control=1`).
+- **ASUS / Lenovo / Desktop:** `Quiet / Everyday / Max Speed` profiles work via `power-profiles-daemon`; Dell-specific PWM controls safely no-op.
 
-<details>
-<summary><b>2. CPU & Sched-ext (`AMD` vs `Intel` vs Non-CachyOS Kernels)</b></summary>
-
-- **Thermal Sensors:** `caelestia-telemetry` automatically probes `k10temp` / `zenpower` (AMD), `coretemp` (Intel), and `acpitz` (ACPI fallback).
-- **CPU Frequency Scaling:** Balanced cool tuning sets `balance_power` EPP and caps `scaling_max_freq` at `80%` of hardware max (`cpuinfo_max_freq`). On older Intel CPUs where `80%` feels conservative, simply toggle **Cool & quiet balanced tuning** off in the **Optimization** tab.
-- **No `scx-scheds` Installed:** If your kernel lacks `sched-ext` (`< 6.12`) or `scxctl` is absent, the shell gracefully runs standard Linux **EEVDF** without any errors.
-
-</details>
-
-<details>
-<summary><b>3. Laptop Fan & Thermal Control (`Dell` vs `ThinkPad` vs `ASUS / Desktop`)</b></summary>
-
-- **Dell G-Series / Alienware / Inspiron (`dell_smm` + `alienware_wmi`):** Full support out of the box for both adaptive Balanced cooling (`auto-cool`) and manual CPU/GPU % sliders.
-- **ThinkPad (`thinkpad_hwmon`):** Fan RPM telemetry works automatically. Manual fan overrides require `options thinkpad_acpi fan_control=1` or external tools like `thinkfan`.
-- **ASUS / Lenovo / Desktops:** Standard `powerprofilesctl` (`Quiet`, `Everyday`, `Max Speed`) works natively via `power-profiles-daemon`. Vendor-specific Dell PWM writes safely no-op on non-Dell hardware.
-
-</details>
-
-<details>
-<summary><b>4. Monitors, Weather & Root Block Device</b></summary>
-
-- **Monitor Resolution & Refresh Rate:** Configure visually in **Nexus Settings → Display**, or edit `~/.config/hypr/hyprland/rules.lua`.
+### 4. Monitors, Weather & Polkit
+- **Display Scale / Refresh Rate:** Configure inside **Nexus Settings → Panels / Display** or `~/.config/hypr/hyprland/rules.lua`.
 - **Weather Location:** Set `"weatherLocation": "<lat>,<lon>"` in `~/.config/caelestia/shell.json` or via **Nexus Settings → Language & region**.
-- **Root Disk I/O Scheduler:** `caelestia-optimize` and `caelestia-telemetry` automatically resolve your `/` backing device (`nvme0n1`, `nvme1n1`, `sda`, etc.) via `findmnt` + `lsblk`.
-
-</details>
-
-<details>
-<summary><b>5. Polkit & SDDM Options</b></summary>
-
-- Passing `--with-polkit` installs `/etc/polkit-1/rules.d/10-caelestia.rules` for `$USER` so **Boost & Clean Now**, **Thermal Mode**, and **System Updates** execute via `pkexec` without password prompts. Omit `--with-polkit` if you prefer password prompts on every privileged action.
-- Passing `--with-sddm` installs `sddm-theme/caelestia` to `/usr/share/sddm/themes/caelestia` and activates it via `/etc/sddm.conf.d/10-caelestia.conf`.
-
-</details>
+- **Passwordless Actions:** Omit `--with-polkit` during install (or remove `/etc/polkit-1/rules.d/10-caelestia.rules`) if you prefer password prompts on optimization/updates.
 
 ---
 
-## Repository Structure
-
-```text
-Caelestia-NCH2024/
-├── assets/screenshots/             # Live desktop, Optimization, & Nexus screenshots
-├── bin/
-│   ├── caelestia-optimize          # Portable privileged thermal/cleanup/scx/IO backend
-│   └── caelestia-telemetry         # Fast (~110ms) multi-vendor sysfs telemetry probe
-├── config/
-│   ├── caelestia/                  # shell.json, hypr-vars.lua, equalizer.json, optimizer.json
-│   ├── hypr/                       # Full Hyprland Lua configuration
-│   └── quickshell/caelestia/       # QML Shell, Top Optimization Tab & Nexus Control Center
-├── sddm-theme/caelestia/           # Matching SDDM login theme
-├── system/                         # Polkit rule template & SDDM conf snippet
-├── install.sh                      # Hardware-aware installer with automatic backups
-└── uninstall.sh                    # Clean system helper uninstaller
-```
-
----
-
-## Useful CLI & Troubleshooting Commands
+## Troubleshooting & IPC Shortcuts
 
 ```bash
-# View live Quickshell / QML logs
+# Live shell logs
 caelestia shell -l
 
-# Open specific drawers or Nexus pages via IPC
-qs -c caelestia ipc call drawers openDashboardTab 3   # Open Top Optimization Tab
+# Open drawers or Nexus pages directly via CLI / keybinds
+qs -c caelestia ipc call drawers openDashboardTab 3   # Top Optimization Tab
+qs -c caelestia ipc call nexus openPage 0            # Modes & Routines
 qs -c caelestia ipc call nexus openPage 1            # Power, Fans & Care
 qs -c caelestia ipc call nexus openPage 5            # Audio & Studio Equalizer
+qs -c caelestia ipc call nexus openPage 7            # Updates & Drivers
 qs -c caelestia ipc call nexus openPage 13           # About (Caelestia × Meow)
 
-# Verify backend telemetry & optimization manually
-/usr/local/bin/caelestia-telemetry
-pkexec /usr/local/bin/caelestia-optimize thermal balanced
+# Uninstall system helpers
+./uninstall.sh
 ```
 
 ---
 
 <div align="center">
-  Built with <b>Hyprland</b> & <b>Quickshell</b> • Remade by <b>Meow</b> (<a href="https://github.com/NCH2024">@NCH2024</a>)
+  Remade by <b>Meow</b> (<a href="https://github.com/NCH2024">@NCH2024</a>) • Built on <b>Caelestia Shell</b>
 </div>
