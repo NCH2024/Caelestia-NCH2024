@@ -34,6 +34,39 @@ PageBase {
         }
     ]
 
+    readonly property list<MenuItem> retentionItems: [
+        MenuItem {
+            text: "7 Days (1 Week)"
+            icon: "schedule"
+            readonly property int value: 7
+        },
+        MenuItem {
+            text: "14 Days (2 Weeks)"
+            icon: "schedule"
+            readonly property int value: 14
+        },
+        MenuItem {
+            text: "30 Days (1 Month)"
+            icon: "calendar_month"
+            readonly property int value: 30
+        },
+        MenuItem {
+            text: "90 Days (3 Months)"
+            icon: "calendar_month"
+            readonly property int value: 90
+        },
+        MenuItem {
+            text: "180 Days (6 Months)"
+            icon: "calendar_month"
+            readonly property int value: 180
+        },
+        MenuItem {
+            text: "Never (Keep Forever)"
+            icon: "all_inclusive"
+            readonly property int value: 0
+        }
+    ]
+
     ColumnLayout {
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.top: parent.top
@@ -477,6 +510,47 @@ PageBase {
             subtext: "Enables simulated mouse clicks & keyboard typing for GUI automation"
             disabled: AiAutomationService.ydotoolActive
             onClicked: AiAutomationService.enableYdotool()
+        }
+
+        // Section: History & Execution Logs
+        SectionHeader {
+            text: Tr.tr("History & Execution Logs")
+        }
+
+        SelectRow {
+            first: true
+            label: "Auto-Delete History & Logs After"
+            subtext: "Automatically clean up older conversations and execution log files"
+            menuItems: root.retentionItems
+            active: root.retentionItems.find(i => i.value === AiAutomationService.logRetentionDays) ?? root.retentionItems[2]
+            onSelected: item => {
+                AiAutomationService.logRetentionDays = item.value;
+                AiAutomationService.saveConfig();
+                AiAutomationService.pruneExpiredHistory();
+            }
+        }
+
+        RowButton {
+            icon: "cleaning_services"
+            text: `Prune Expired Logs Now (${AiAutomationService.historySessions.length} chats • ${AiAutomationService.totalLogFiles} logs • ${AiAutomationService.formatBytes(AiAutomationService.totalLogBytes)})`
+            subtext: "Delete conversations & logs exceeding your retention window"
+            onClicked: AiAutomationService.pruneExpiredHistory()
+        }
+
+        RowButton {
+            icon: "folder_open"
+            text: "Open Persistent Logs Folder"
+            subtext: AiAutomationService.logsDir
+            onClicked: AiAutomationService.openLogsFolder()
+        }
+
+        RowButton {
+            last: true
+            icon: "delete_forever"
+            text: "Clear All Chat History & Execution Logs"
+            subtext: "Permanently remove all saved conversations and log files from disk"
+            disabled: AiAutomationService.running || (AiAutomationService.historySessions.length === 0 && AiAutomationService.totalLogFiles === 0)
+            onClicked: AiAutomationService.clearAllHistory()
         }
 
         // Section: Quick Access Shortcuts

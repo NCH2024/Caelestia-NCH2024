@@ -50,6 +50,7 @@
   - Deep **Antigravity CLI (`agy`)** integration in Nexus Settings: detects installation & login state (`agy`), lists all discovered models dynamically, supports **Chat Language selection** (`Tiếng Việt`, `English`, `Auto`), and enables **automatic quota/rate-limit model failover**.
   - **Coordinator & Execution Engine (`Meow AI`):** Classifies simple vs complex requests (`direct` Q&A vs 1–4 parallel/sequential specialists), runs autonomous polish-and-verify rounds, and uses calibrated computer-use tooling (`caelestia-desktop`: grid screenshots, 1px-calibrated `ydotool` pointer clicks, UTF-8/Vietnamese typing, hotkeys & OCR) to operate browsers and desktop apps safely while streaming progress directly into the Rich-Markdown **Meow AI Assistant** chat (`fcitx5` Vietnamese IME enabled).
   - **Persistent Quota Cooldown Cache:** Tracks per-model `429` reset timers (`ai_model_cooldowns.json`) and displays live `Ready` / `Cooldown` badges in Nexus so exhausted models are skipped automatically with zero retry storms.
+  - **Persistent Chat History & Log Retention:** Automatically saves conversations (`~/.local/share/caelestia/ai/history.json`) and raw execution logs (`logs/*.log`) with an in-chat **History** browser (`restore chat` / `view log` / `delete`) and configurable auto-cleanup from **7 days (1 week) up to 180 days (6 months)** or manual one-click wipe in Nexus Settings.
   - **Quick Launch (`SUPER + >` / `>ai <command>`):** Jumps straight into AI prompt entry inside the Caelestia Launcher (every new request starts a fresh chat automatically).
 
 ---

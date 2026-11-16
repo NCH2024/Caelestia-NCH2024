@@ -39,6 +39,15 @@ Singleton {
     property bool openWorkerTerminal: false // Hidden by default; live progress renders in Chat
     property bool allowDesktopActions: true
     property bool askOnInvalidResult: true
+    property int logRetentionDays: 30 // 7, 14, 30, 90, 180, or 0 (never)
+
+    // Persistent conversation history & log storage
+    readonly property string dataRoot: `${Paths.data}/ai`
+    readonly property string logsDir: `${dataRoot}/logs`
+    property var historySessions: []
+    property string activeSessionId: ""
+    property int totalLogFiles: 0
+    property int totalLogBytes: 0
 
     // Runtime orchestration & chat state
     property bool loaded: false
@@ -135,6 +144,8 @@ Singleton {
     function clearChat(): void {
         if (running)
             return;
+        activeSessionId = "";
+        currentLogPath = "";
         chatMessages = [];
         liveSteps = [];
         streamingWorkerText = "";
@@ -143,6 +154,143 @@ Singleton {
         currentPhase = "idle";
         currentProgress = 0;
         phaseDetail = "";
+    }
+
+    function formatBytes(bytes: int): string {
+        if (bytes < 1024)
+            return `${bytes} B`;
+        if (bytes < 1048576)
+            return `${(bytes / 1024).toFixed(1)} KB`;
+        return `${(bytes / 1048576).toFixed(2)} MB`;
+    }
+
+    function formatDateTime(ms: real): string {
+        const d = new Date(ms);
+        const pad = n => String(n).padStart(2, "0");
+        return `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    function refreshLogStats(): void {
+        logStatsProc.running = false;
+        logStatsProc.running = true;
+    }
+
+    function saveCurrentSession(): void {
+        if (!activeSessionId || chatMessages.length === 0)
+            return;
+        const firstUser = chatMessages.find(m => m.role === "user");
+        const title = firstUser ? String(firstUser.text).slice(0, 80) : "AI Task";
+        const nowMs = Date.now();
+        const entry = {
+            id: activeSessionId,
+            title: title,
+            createdAt: Number(activeSessionId.split("-")[0]) || nowMs,
+            updatedAt: nowMs,
+            status: currentPhase,
+            supervisorModel: activeSupervisorModel || supervisorModel,
+            workerModel: activeWorkerModel || workerModel,
+            logPath: currentLogPath,
+            messages: chatMessages,
+            steps: liveSteps
+        };
+        const list = (historySessions || []).slice();
+        const idx = list.findIndex(s => s.id === activeSessionId);
+        if (idx >= 0)
+            list[idx] = entry;
+        else
+            list.unshift(entry);
+        // Keep newest 200 metadata records bounded
+        historySessions = list.slice(0, 200);
+        historySaveTimer.restart();
+    }
+
+    function loadHistorySession(sessionId: string): void {
+        if (running)
+            return;
+        const found = (historySessions || []).find(s => s.id === sessionId);
+        if (!found)
+            return;
+        activeSessionId = found.id;
+        chatMessages = (found.messages || []).slice();
+        liveSteps = (found.steps || []).slice();
+        currentLogPath = found.logPath || "";
+        activeSupervisorModel = found.supervisorModel || supervisorModel;
+        activeWorkerModel = found.workerModel || workerModel;
+        currentPhase = found.status === "error" ? "error" : "done";
+        currentProgress = currentPhase === "done" ? 100 : 0;
+        phaseDetail = trChat(`Lịch sử (${formatDateTime(found.updatedAt)})`, `History (${formatDateTime(found.updatedAt)})`);
+        hasPendingQuestion = false;
+        pendingQuestion = null;
+        streamingWorkerText = "";
+    }
+
+    function openSessionLog(logPath: string): void {
+        if (!logPath)
+            return;
+        Quickshell.execDetached([
+            "foot",
+            "--app-id", "caelestia-ai-terminal",
+            "-T", "Meow AI — Execution Log",
+            "-e", "bash", "-c",
+            `if [ -f '${logPath}' ]; then less -R +G '${logPath}'; else echo 'Log file removed or expired.'; read -p 'Press Enter...' _; fi`
+        ]);
+    }
+
+    function deleteHistorySession(sessionId: string): void {
+        const list = (historySessions || []).slice();
+        const idx = list.findIndex(s => s.id === sessionId);
+        if (idx < 0)
+            return;
+        const logPath = list[idx].logPath || "";
+        list.splice(idx, 1);
+        historySessions = list;
+        if (activeSessionId === sessionId && !running)
+            clearChat();
+        historySaveTimer.restart();
+        if (logPath)
+            Quickshell.execDetached(["rm", "-f", logPath]);
+        Qt.callLater(() => refreshLogStats());
+    }
+
+    function pruneExpiredHistory(): void {
+        if (logRetentionDays <= 0)
+            return;
+        const cutoffMs = Date.now() - (logRetentionDays * 86400000);
+        const kept = [];
+        const expiredLogs = [];
+        for (const s of (historySessions || [])) {
+            const ts = Number(s.updatedAt || s.createdAt || 0);
+            if (ts > 0 && ts < cutoffMs) {
+                if (s.logPath)
+                    expiredLogs.push(s.logPath);
+            } else {
+                kept.push(s);
+            }
+        }
+        if (kept.length !== (historySessions || []).length) {
+            historySessions = kept;
+            historySaveTimer.restart();
+        }
+        // Also prune any orphaned/old .log files on disk older than logRetentionDays
+        pruneLogsProc.command = [
+            "bash", "-c",
+            `mkdir -p '${root.logsDir}' && find '${root.logsDir}' -type f -name '*.log' -mtime +${Math.max(1, root.logRetentionDays)} -delete 2>/dev/null; ` +
+            expiredLogs.map(p => `rm -f '${p}'`).join("; ")
+        ];
+        pruneLogsProc.running = true;
+    }
+
+    function clearAllHistory(): void {
+        if (running)
+            return;
+        historySessions = [];
+        clearChat();
+        historySaveTimer.restart();
+        clearLogsProc.running = true;
+    }
+
+    function openLogsFolder(): void {
+        Quickshell.execDetached(["bash", "-c", `mkdir -p '${root.logsDir}' && setsid -f xdg-open '${root.logsDir}' >/dev/null 2>&1`]);
     }
 
     function refreshEnvironment(): void {
@@ -251,7 +399,9 @@ Singleton {
             return;
         }
 
-        const logFile = `/tmp/caelestia-ai-${Date.now()}.log`;
+        const sid = `${Date.now()}`;
+        const logFile = `${root.logsDir}/ai-${sid}.log`;
+        activeSessionId = sid;
         currentLogPath = logFile;
         running = true;
         currentPhase = "planning";
@@ -366,14 +516,14 @@ Singleton {
                 `Quota/rate limit reached on ${ev.fromModel}. Auto-switched to ${ev.toModel}.`
             );
             appendMessage("system", trChat("Tự động đổi Model", "Auto Model Switch"), msg, ev.toModel);
-            Notifs.notify({
-                appName: "AI Automation",
-                summary: trChat("Đã tự động đổi Model", "Model Auto-Switched"),
-                body: msg,
-                appIcon: "auto_awesome"
-            });
+            Toaster.toast(
+                trChat("Đã tự động đổi Model", "Model Auto-Switched"),
+                msg,
+                "auto_awesome"
+            );
         } else if (t === "assistant_message") {
             appendMessage("assistant", ev.title || "Meow AI", ev.text || "", ev.model || "");
+            saveCurrentSession();
         } else if (t === "user_question") {
             streamingWorkerText = "";
             hasPendingQuestion = true;
@@ -383,13 +533,13 @@ Singleton {
                 suggestedFix: ev.suggestedFix || ""
             };
             appendMessage("question", trChat("Cần bạn xác nhận", "Confirmation Needed"), pendingQuestion.question, ev.model || "");
+            saveCurrentSession();
             monitorRequested();
-            Notifs.notify({
-                appName: "AI Automation",
-                summary: trChat("AI cần xác nhận của bạn", "AI Needs Confirmation"),
-                body: pendingQuestion.question,
-                appIcon: "help"
-            });
+            Toaster.toast(
+                trChat("AI cần xác nhận của bạn", "AI Needs Confirmation"),
+                pendingQuestion.question,
+                "help"
+            );
         } else if (t === "task_complete") {
             currentPhase = "done";
             currentProgress = 100;
@@ -397,12 +547,13 @@ Singleton {
             running = false;
             hasPendingQuestion = false;
             pendingQuestion = null;
-            Notifs.notify({
-                appName: "AI Automation",
-                summary: trChat("Hoàn tất tác vụ AI", "AI Task Completed"),
-                body: String(ev.summary || "Done.").slice(0, 140),
-                appIcon: "check_circle"
-            });
+            saveCurrentSession();
+            refreshLogStats();
+            Toaster.toast(
+                trChat("Hoàn tất tác vụ AI", "AI Task Completed"),
+                String(ev.summary || "Done.").slice(0, 140),
+                "check_circle"
+            );
         } else if (t === "task_error") {
             currentPhase = "error";
             phaseDetail = ev.message || trChat("Tác vụ gặp lỗi.", "Task failed.");
@@ -410,6 +561,8 @@ Singleton {
             hasPendingQuestion = false;
             pendingQuestion = null;
             appendMessage("system", trChat("Thông báo", "Notice"), ev.message || "Unknown error.", "");
+            saveCurrentSession();
+            refreshLogStats();
         }
     }
 
@@ -420,7 +573,9 @@ Singleton {
     }
 
     Component.onCompleted: {
+        ensureDirsProc.running = true;
         refreshEnvironment();
+        refreshLogStats();
     }
 
     Timer {
@@ -461,10 +616,48 @@ Singleton {
                 fullPermissions: root.fullPermissions,
                 openWorkerTerminal: root.openWorkerTerminal,
                 allowDesktopActions: root.allowDesktopActions,
-                askOnInvalidResult: root.askOnInvalidResult
+                askOnInvalidResult: root.askOnInvalidResult,
+                logRetentionDays: root.logRetentionDays
             };
             configFile.setText(JSON.stringify(payload, null, 2));
         }
+    }
+
+    Timer {
+        id: historySaveTimer
+        interval: 200
+        repeat: false
+        onTriggered: {
+            historyFile.setText(JSON.stringify({ sessions: root.historySessions }, null, 2));
+        }
+    }
+
+    Process {
+        id: ensureDirsProc
+        command: ["mkdir", "-p", root.logsDir]
+    }
+
+    Process {
+        id: logStatsProc
+        command: ["bash", "-c", `mkdir -p '${root.logsDir}' && find '${root.logsDir}' -type f -name '*.log' -printf '%s\n' 2>/dev/null | awk '{c++; s+=$1} END {print c+0 " " s+0}'`]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const parts = text.trim().split(/\s+/);
+                root.totalLogFiles = Number(parts[0] || 0);
+                root.totalLogBytes = Number(parts[1] || 0);
+            }
+        }
+    }
+
+    Process {
+        id: pruneLogsProc
+        onExited: root.refreshLogStats()
+    }
+
+    Process {
+        id: clearLogsProc
+        command: ["bash", "-c", `rm -f '${root.logsDir}'/*.log /tmp/caelestia-ai-*.log 2>/dev/null || true`]
+        onExited: root.refreshLogStats()
     }
 
     Process {
@@ -628,15 +821,36 @@ Singleton {
                     root.allowDesktopActions = Boolean(d.allowDesktopActions);
                 if (d.askOnInvalidResult !== undefined)
                     root.askOnInvalidResult = Boolean(d.askOnInvalidResult);
+                if (d.logRetentionDays !== undefined)
+                    root.logRetentionDays = Number(d.logRetentionDays);
             } catch (e) {}
             root.loaded = true;
             root.activeSupervisorModel = root.supervisorModel;
             root.activeWorkerModel = root.workerModel;
+            Qt.callLater(() => root.pruneExpiredHistory());
         }
         onLoadFailed: err => {
             root.loaded = true;
             if (err === FileViewError.FileNotFound)
                 Qt.callLater(() => saveTimer.restart());
+        }
+    }
+
+    FileView {
+        id: historyFile
+        path: `${root.dataRoot}/history.json`
+        onLoaded: {
+            try {
+                const raw = JSON.parse(text());
+                if (raw && Array.isArray(raw.sessions))
+                    root.historySessions = raw.sessions;
+            } catch (e) {}
+            if (root.loaded)
+                Qt.callLater(() => root.pruneExpiredHistory());
+        }
+        onLoadFailed: err => {
+            if (err === FileViewError.FileNotFound)
+                root.historySessions = [];
         }
     }
 }

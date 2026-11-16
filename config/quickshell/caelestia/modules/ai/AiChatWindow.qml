@@ -13,6 +13,8 @@ Item {
     id: root
 
     property bool pinned: false
+    property bool showHistory: false
+    property string historyFilter: ""
     signal close()
 
     function roleBg(role: string): color {
@@ -327,6 +329,19 @@ Item {
                     }
                 }
 
+                // Conversation History & Logs Drawer Toggle
+                IconButton {
+                    icon: "history"
+                    type: IconButton.Text
+                    padding: Tokens.padding.extraSmall
+                    inactiveOnColour: root.showHistory ? Colours.palette.m3primary : Colours.palette.m3onSurfaceVariant
+                    onClicked: {
+                        root.showHistory = !root.showHistory;
+                        if (root.showHistory)
+                            AiAutomationService.refreshLogStats();
+                    }
+                }
+
                 // Optional raw log viewer
                 IconButton {
                     visible: AiAutomationService.currentLogPath.length > 0
@@ -449,8 +464,176 @@ Item {
             }
         }
 
+        // History & Logs View (when showHistory = true)
+        StyledRect {
+            visible: root.showHistory
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            radius: Tokens.rounding.extraLarge
+            color: Colours.layer(Colours.palette.m3surfaceContainer, 1)
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: Tokens.padding.medium
+                spacing: Tokens.spacing.small
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Tokens.spacing.small
+
+                    StyledRect {
+                        Layout.fillWidth: true
+                        implicitHeight: 38
+                        radius: Tokens.rounding.large
+                        color: Colours.layer(Colours.palette.m3surfaceContainerHigh, 2)
+
+                        TextFieldBase {
+                            id: histSearch
+                            anchors.fill: parent
+                            background: Item {}
+                            leftPadding: Tokens.padding.medium
+                            rightPadding: Tokens.padding.medium
+                            topPadding: 6
+                            bottomPadding: 6
+                            font: Tokens.font.body.small
+                            onTextChanged: root.historyFilter = text.trim().toLowerCase()
+
+                            StyledText {
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.left: parent.left
+                                anchors.leftMargin: Tokens.padding.medium
+                                visible: !histSearch.text
+                                text: AiAutomationService.trChat("Tìm lịch sử hội thoại & log...", "Search saved conversations & logs...")
+                                color: Colours.palette.m3outline
+                                font: Tokens.font.body.small
+                            }
+                        }
+                    }
+
+                    IconTextButton {
+                        icon: "add"
+                        text: AiAutomationService.trChat("Chat mới", "New Chat")
+                        type: IconTextButton.Tonal
+                        enabled: !AiAutomationService.running
+                        onClicked: {
+                            AiAutomationService.clearChat();
+                            root.showHistory = false;
+                        }
+                    }
+
+                    IconTextButton {
+                        icon: "delete_sweep"
+                        text: AiAutomationService.trChat("Xóa hết", "Clear All")
+                        type: IconTextButton.Text
+                        enabled: !AiAutomationService.running && AiAutomationService.historySessions.length > 0
+                        onClicked: AiAutomationService.clearAllHistory()
+                    }
+                }
+
+                StyledText {
+                    Layout.fillWidth: true
+                    text: AiAutomationService.trChat(
+                        `${AiAutomationService.historySessions.length} cuộc trò chuyện đã lưu • ${AiAutomationService.totalLogFiles} file log (${AiAutomationService.formatBytes(AiAutomationService.totalLogBytes)})`,
+                        `${AiAutomationService.historySessions.length} saved chats • ${AiAutomationService.totalLogFiles} log files (${AiAutomationService.formatBytes(AiAutomationService.totalLogBytes)})`
+                    )
+                    font: Tokens.font.label.small
+                    color: Colours.palette.m3onSurfaceVariant
+                }
+
+                ListView {
+                    id: historyList
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: Tokens.spacing.extraSmall
+                    clip: true
+
+                    model: (AiAutomationService.historySessions || []).filter(s => {
+                        if (!root.historyFilter)
+                            return true;
+                        return String(s.title || "").toLowerCase().includes(root.historyFilter)
+                            || String(s.supervisorModel || "").toLowerCase().includes(root.historyFilter);
+                    })
+
+                    StyledScrollBar.vertical: StyledScrollBar {
+                        flickable: historyList
+                    }
+
+                    delegate: StyledRect {
+                        id: histCard
+                        required property var modelData
+                        width: historyList.width
+                        implicitHeight: histRow.implicitHeight + Tokens.padding.small * 2
+                        radius: Tokens.rounding.large
+                        color: modelData.id === AiAutomationService.activeSessionId
+                            ? Colours.palette.m3secondaryContainer
+                            : Colours.layer(Colours.palette.m3surfaceContainerHigh, 2)
+
+                        StateLayer {
+                            radius: Tokens.rounding.large
+                            enabled: !AiAutomationService.running
+                            onClicked: {
+                                AiAutomationService.loadHistorySession(histCard.modelData.id);
+                                root.showHistory = false;
+                            }
+                        }
+
+                        RowLayout {
+                            id: histRow
+                            anchors.fill: parent
+                            anchors.margins: Tokens.padding.small
+                            anchors.leftMargin: Tokens.padding.medium
+                            spacing: Tokens.spacing.small
+
+                            MaterialIcon {
+                                text: histCard.modelData.status === "error" ? "error" : "chat_bubble"
+                                fontStyle: Tokens.font.icon.medium
+                                color: histCard.modelData.status === "error" ? Colours.palette.m3error : Colours.palette.m3primary
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 1
+
+                                StyledText {
+                                    Layout.fillWidth: true
+                                    text: histCard.modelData.title || "AI Task"
+                                    font: Tokens.font.body.small
+                                    elide: Text.ElideRight
+                                }
+
+                                StyledText {
+                                    Layout.fillWidth: true
+                                    text: `${AiAutomationService.formatDateTime(histCard.modelData.updatedAt || histCard.modelData.createdAt)} • ${(histCard.modelData.messages || []).length} msgs • ${histCard.modelData.supervisorModel || ""}`
+                                    font: Tokens.font.label.small
+                                    color: Colours.palette.m3onSurfaceVariant
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            IconButton {
+                                visible: Boolean(histCard.modelData.logPath)
+                                icon: "terminal"
+                                type: IconButton.Text
+                                padding: Tokens.padding.extraSmall
+                                onClicked: AiAutomationService.openSessionLog(histCard.modelData.logPath)
+                            }
+
+                            IconButton {
+                                icon: "delete"
+                                type: IconButton.Text
+                                padding: Tokens.padding.extraSmall
+                                inactiveOnColour: Colours.palette.m3error
+                                onClicked: AiAutomationService.deleteHistorySession(histCard.modelData.id)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Chat Timeline
         StyledRect {
+            visible: !root.showHistory
             Layout.fillWidth: true
             Layout.fillHeight: true
             radius: Tokens.rounding.extraLarge
@@ -802,6 +985,7 @@ Item {
                         if (!txt)
                             return;
                         promptInput.text = "";
+                        root.showHistory = false;
                         AiAutomationService.runTask(txt);
                     }
 
@@ -829,6 +1013,7 @@ Item {
                         if (!txt)
                             return;
                         promptInput.text = "";
+                        root.showHistory = false;
                         AiAutomationService.runTask(txt);
                     }
                 }
