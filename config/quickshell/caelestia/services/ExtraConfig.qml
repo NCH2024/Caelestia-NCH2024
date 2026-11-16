@@ -268,6 +268,8 @@ Singleton {
             triggerType: "time",
             triggerValue: "22:00-06:00",
             triggerLabel: "22:00 – 06:00",
+            matchMode: "time",
+            revertOnExit: true,
             actionType: "mode",
             actionValue: "sleep",
             actionLabel: "Night & Battery Saver"
@@ -277,8 +279,10 @@ Singleton {
             name: "Auto Gaming Mode on Steam / Games",
             enabled: true,
             triggerType: "process",
-            triggerValue: "steam|gamescope|cs2|dota2",
-            triggerLabel: "App: steam, gamescope, cs2, dota2",
+            triggerValue: "steam|steam_app_|gamescope|cs2|dota2",
+            triggerLabel: "Window: steam, gamescope, cs2, dota2",
+            matchMode: "window",
+            revertOnExit: true,
             actionType: "mode",
             actionValue: "gaming",
             actionLabel: "Gaming & Turbo"
@@ -289,7 +293,9 @@ Singleton {
             enabled: false,
             triggerType: "process",
             triggerValue: "mpv|vlc",
-            triggerLabel: "App: mpv, vlc",
+            triggerLabel: "Window: mpv, vlc",
+            matchMode: "window",
+            revertOnExit: true,
             actionType: "mode",
             actionValue: "cinema",
             actionLabel: "Cinema & Media"
@@ -300,12 +306,42 @@ Singleton {
             enabled: false,
             triggerType: "process",
             triggerValue: "code|nvim|zed",
-            triggerLabel: "App: code, nvim, zed",
+            triggerLabel: "Window: code, nvim, zed",
+            matchMode: "window",
+            revertOnExit: true,
             actionType: "mode",
             actionValue: "coding",
             actionLabel: "Developer"
         }
     ]
+
+    // Edge-triggered routine runtime tracking (prevents fighting manual overrides & handles auto-restore)
+    property var routineRuntimeState: ({})
+    property bool _internalRoutineSwitch: false
+
+    readonly property var openWindowsList: {
+        const list = [];
+        const seen = {};
+        const toplevels = Hypr.toplevels?.values ?? [];
+        for (let i = 0; i < toplevels.length; i++) {
+            const t = toplevels[i];
+            const cls = String(t?.lastIpcObject?.class ?? "").trim();
+            const ttl = String(t?.title ?? "").trim();
+            if (!cls)
+                continue;
+            const key = cls.toLowerCase();
+            if (!seen[key]) {
+                seen[key] = true;
+                list.push({ appClass: cls, title: ttl });
+            }
+        }
+        return list;
+    }
+
+    onOpenWindowsListChanged: {
+        if (loaded)
+            windowEvalTimer.restart();
+    }
 
     function refreshTelemetry(): void {
         OptimizerService.refreshTelemetry();
@@ -412,6 +448,20 @@ Singleton {
         if (!m)
             return;
 
+        if (!root._internalRoutineSwitch) {
+            const nextState = Object.assign({}, root.routineRuntimeState);
+            let stateChanged = false;
+            for (const rId in nextState) {
+                const st = nextState[rId];
+                if (st && st.active && st.actionValue !== modeId && !st.dismissed) {
+                    nextState[rId] = Object.assign({}, st, { dismissed: true });
+                    stateChanged = true;
+                }
+            }
+            if (stateChanged)
+                root.routineRuntimeState = nextState;
+        }
+
         root.activeModeId = m.id;
         root.activeModeIcon = m.icon;
 
@@ -493,10 +543,51 @@ Singleton {
             nextRoutines.push(copy);
         }
         root.routines = nextRoutines;
+        if (!on) {
+            const st = root.routineRuntimeState[routineId];
+            if (st && st.active && !st.dismissed && st.actionValue === root.activeModeId) {
+                root._internalRoutineSwitch = true;
+                root.activateMode(st.prevModeId || "standard");
+                root._internalRoutineSwitch = false;
+            }
+            const nextState = Object.assign({}, root.routineRuntimeState);
+            delete nextState[routineId];
+            root.routineRuntimeState = nextState;
+        } else {
+            Qt.callLater(evaluateAllRoutines);
+        }
         save();
     }
 
-    function addRoutine(name: string, triggerType: string, triggerValue: string, triggerLabel: string, actionType: string, actionValue: string, actionLabel: string): void {
+    function updateRoutineProperty(routineId: string, propName: string, propVal: var): void {
+        const nextRoutines = [];
+        for (let i = 0; i < root.routines.length; i++) {
+            const copy = Object.assign({}, root.routines[i]);
+            if (copy.id === routineId) {
+                copy[propName] = propVal;
+            }
+            nextRoutines.push(copy);
+        }
+        root.routines = nextRoutines;
+        save();
+        Qt.callLater(evaluateAllRoutines);
+    }
+
+    function getRoutineStatus(routineId: string): string {
+        const st = root.routineRuntimeState[routineId];
+        if (!st || !st.active)
+            return "idle";
+        return st.dismissed ? "dismissed" : "active";
+    }
+
+    function resumeRoutine(routineId: string): void {
+        const nextState = Object.assign({}, root.routineRuntimeState);
+        delete nextState[routineId];
+        root.routineRuntimeState = nextState;
+        Qt.callLater(evaluateAllRoutines);
+    }
+
+    function addRoutine(name: string, triggerType: string, triggerValue: string, triggerLabel: string, actionType: string, actionValue: string, actionLabel: string, matchMode = "window", revertOnExit = true): void {
         const next = root.routines.slice();
         next.push({
             id: "routine_" + Date.now(),
@@ -505,23 +596,32 @@ Singleton {
             triggerType: triggerType,
             triggerValue: triggerValue,
             triggerLabel: triggerLabel,
+            matchMode: matchMode,
+            revertOnExit: revertOnExit,
             actionType: actionType,
             actionValue: actionValue,
             actionLabel: actionLabel
         });
         root.routines = next;
         save();
+        Qt.callLater(evaluateAllRoutines);
     }
 
     function removeRoutine(routineId: string): void {
+        const nextState = Object.assign({}, root.routineRuntimeState);
+        delete nextState[routineId];
+        root.routineRuntimeState = nextState;
         root.routines = root.routines.filter(r => r.id !== routineId);
         save();
     }
 
     function executeRoutineAction(r: var): void {
         if (r.actionType === "mode") {
-            if (root.activeModeId !== r.actionValue)
+            if (root.activeModeId !== r.actionValue) {
+                root._internalRoutineSwitch = true;
                 root.activateMode(r.actionValue);
+                root._internalRoutineSwitch = false;
+            }
         } else if (r.actionType === "command") {
             Quickshell.execDetached(["bash", "-c", r.actionValue]);
         } else if (r.actionType === "nightlight") {
@@ -529,6 +629,99 @@ Singleton {
                 root.applyNightLight(true, 4000);
         } else if (r.actionType === "dnd") {
             Notifs.dnd = true;
+        }
+    }
+
+    function _handleRoutineEvaluation(r: var, isMatched: bool, matchedBy = ""): void {
+        const nextState = Object.assign({}, root.routineRuntimeState);
+        const st = nextState[r.id];
+
+        if (isMatched) {
+            if (!st || !st.active) {
+                const prevId = (root.activeModeId && root.activeModeId !== r.actionValue) ? root.activeModeId : "standard";
+                nextState[r.id] = {
+                    active: true,
+                    dismissed: false,
+                    prevModeId: prevId,
+                    actionValue: r.actionValue,
+                    matchedBy: matchedBy
+                };
+                root.routineRuntimeState = nextState;
+                root.executeRoutineAction(r);
+            }
+        } else if (st && st.active) {
+            const shouldRevert = (r.revertOnExit !== false) && !st.dismissed && r.actionType === "mode" && root.activeModeId === r.actionValue;
+            const restoreId = st.prevModeId || "standard";
+            delete nextState[r.id];
+            root.routineRuntimeState = nextState;
+            if (shouldRevert) {
+                root._internalRoutineSwitch = true;
+                root.activateMode(restoreId);
+                root._internalRoutineSwitch = false;
+            }
+        }
+    }
+
+    function evaluateWindowRoutines(): void {
+        if (!root.loaded)
+            return;
+        const wins = root.openWindowsList;
+        for (let i = 0; i < root.routines.length; i++) {
+            const r = root.routines[i];
+            if (!r.enabled || r.triggerType !== "process")
+                continue;
+            const mode = r.matchMode || "window";
+            if (mode !== "window")
+                continue;
+            const patterns = String(r.triggerValue).toLowerCase().split("|").map(s => s.trim()).filter(Boolean);
+            let matchedWin = "";
+            const isMatched = wins.some(w => {
+                const cls = w.appClass.toLowerCase();
+                const ttl = w.title.toLowerCase();
+                const hit = patterns.some(pat => cls === pat || cls.includes(pat) || ttl.includes(pat));
+                if (hit)
+                    matchedWin = w.appClass;
+                return hit;
+            });
+            root._handleRoutineEvaluation(r, isMatched, matchedWin);
+        }
+    }
+
+    function evaluateAllRoutines(): void {
+        if (!root.loaded)
+            return;
+        const now = new Date();
+        const curMins = now.getHours() * 60 + now.getMinutes();
+
+        for (let i = 0; i < root.routines.length; i++) {
+            const r = root.routines[i];
+            if (!r.enabled)
+                continue;
+
+            if (r.triggerType === "time") {
+                const parts = String(r.triggerValue).split("-");
+                if (parts.length === 2) {
+                    const s = parts[0].split(":");
+                    const e = parts[1].split(":");
+                    const startMins = (parseInt(s[0], 10) || 0) * 60 + (parseInt(s[1], 10) || 0);
+                    const endMins = (parseInt(e[0], 10) || 0) * 60 + (parseInt(e[1], 10) || 0);
+                    const inRange = startMins <= endMins
+                        ? (curMins >= startMins && curMins <= endMins)
+                        : (curMins >= startMins || curMins <= endMins);
+                    root._handleRoutineEvaluation(r, inRange, r.triggerValue);
+                }
+            } else if (r.triggerType === "wifi") {
+                const currentSsid = Nmcli.active?.ssid ?? "";
+                const matched = currentSsid.length > 0 && currentSsid.toLowerCase().includes(String(r.triggerValue).toLowerCase());
+                root._handleRoutineEvaluation(r, matched, currentSsid);
+            }
+        }
+
+        evaluateWindowRoutines();
+
+        const bgProcRoutines = root.routines.filter(r => r.enabled && r.triggerType === "process" && r.matchMode === "process");
+        if (bgProcRoutines.length > 0 && !procRoutineChecker.running) {
+            procRoutineChecker.running = true;
         }
     }
 
@@ -710,46 +903,40 @@ print(json.dumps(out))
     }
 
     Timer {
-        id: routineCheckTimer
+        id: windowEvalTimer
 
-        interval: 20000
-        running: root.loaded
-        repeat: true
-        onTriggered: {
-            const now = new Date();
-            const curMins = now.getHours() * 60 + now.getMinutes();
+        interval: 250
+        onTriggered: root.evaluateWindowRoutines()
+    }
 
-            for (let i = 0; i < root.routines.length; i++) {
-                const r = root.routines[i];
-                if (!r.enabled)
-                    continue;
+    Connections {
+        target: GameMode
 
-                if (r.triggerType === "time") {
-                    const parts = String(r.triggerValue).split("-");
-                    if (parts.length === 2) {
-                        const s = parts[0].split(":");
-                        const e = parts[1].split(":");
-                        const startMins = (parseInt(s[0], 10) || 0) * 60 + (parseInt(s[1], 10) || 0);
-                        const endMins = (parseInt(e[0], 10) || 0) * 60 + (parseInt(e[1], 10) || 0);
-                        const inRange = startMins <= endMins
-                            ? (curMins >= startMins && curMins <= endMins)
-                            : (curMins >= startMins || curMins <= endMins);
-                        if (inRange)
-                            root.executeRoutineAction(r);
-                    }
-                } else if (r.triggerType === "wifi") {
-                    const currentSsid = Nmcli.active?.ssid ?? "";
-                    if (currentSsid.length > 0 && currentSsid.toLowerCase().includes(String(r.triggerValue).toLowerCase())) {
-                        root.executeRoutineAction(r);
+        function onEnabledChanged(): void {
+            if (!GameMode.enabled && !root._internalRoutineSwitch) {
+                const nextState = Object.assign({}, root.routineRuntimeState);
+                let changed = false;
+                for (const rId in nextState) {
+                    const st = nextState[rId];
+                    if (st && st.active && st.actionValue === "gaming" && !st.dismissed) {
+                        nextState[rId] = Object.assign({}, st, { dismissed: true });
+                        changed = true;
                     }
                 }
-            }
-
-            const procRoutines = root.routines.filter(r => r.enabled && r.triggerType === "process");
-            if (procRoutines.length > 0 && !procRoutineChecker.running) {
-                procRoutineChecker.running = true;
+                if (changed)
+                    root.routineRuntimeState = nextState;
             }
         }
+    }
+
+    Timer {
+        id: routineCheckTimer
+
+        interval: 15000
+        running: root.loaded
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: root.evaluateAllRoutines()
     }
 
     Process {
@@ -761,13 +948,17 @@ print(json.dumps(out))
                 const runningProcs = text.toLowerCase().split("\n").map(s => s.trim());
                 for (let i = 0; i < root.routines.length; i++) {
                     const r = root.routines[i];
-                    if (!r.enabled || r.triggerType !== "process")
+                    if (!r.enabled || r.triggerType !== "process" || (r.matchMode || "window") !== "process")
                         continue;
                     const patterns = String(r.triggerValue).toLowerCase().split("|").map(s => s.trim()).filter(Boolean);
-                    const matched = patterns.some(pat => runningProcs.some(p => p === pat || p.includes(pat)));
-                    if (matched) {
-                        root.executeRoutineAction(r);
-                    }
+                    let matchedProc = "";
+                    const matched = patterns.some(pat => {
+                        const hit = runningProcs.find(p => p === pat || p.includes(pat));
+                        if (hit)
+                            matchedProc = hit;
+                        return Boolean(hit);
+                    });
+                    root._handleRoutineEvaluation(r, matched, matchedProc);
                 }
             }
         }
@@ -858,11 +1049,16 @@ print(json.dumps(out))
                     for (let i = 0; i < data.routines.length; i++) {
                         const savedR = data.routines[i];
                         const defR = root.routines.find(x => x.id === savedR.id);
-                        mergedR.push(defR ? Object.assign({}, savedR, {
+                        mergedR.push(defR ? Object.assign({}, defR, savedR, {
                             name: defR.name,
                             triggerLabel: defR.triggerLabel,
-                            actionLabel: defR.actionLabel
-                        }) : savedR);
+                            actionLabel: defR.actionLabel,
+                            matchMode: defR.matchMode,
+                            revertOnExit: savedR.revertOnExit !== undefined ? Boolean(savedR.revertOnExit) : defR.revertOnExit
+                        }) : Object.assign({
+                            matchMode: "window",
+                            revertOnExit: true
+                        }, savedR));
                     }
                     root.routines = mergedR;
                 }

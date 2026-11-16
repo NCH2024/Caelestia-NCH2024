@@ -15,6 +15,8 @@ PageBase {
     property string editingModeId: ExtraConfig.activeModeId
     property bool showAddRoutine: false
     property string newRoutineType: "process"
+    property string newRoutineMatchMode: "window"
+    property bool newRoutineRevertOnExit: true
     property string newRoutineActionType: "mode"
     property string newRoutineActionMode: "gaming"
 
@@ -399,9 +401,105 @@ PageBase {
             }
         }
 
-        // Automated Routines Section (IF / THEN)
+        // Automated Routines Section (IF / THEN) + Live App Watch Monitor
         SectionHeader {
             text: Tr.tr("Automated Routines (If / Then)")
+        }
+
+        // Live Open App & Mode Watch Monitor
+        ConnectedRect {
+            Layout.fillWidth: true
+            implicitHeight: watchCol.implicitHeight + Tokens.padding.large * 2
+            first: true
+
+            ColumnLayout {
+                id: watchCol
+
+                anchors.fill: parent
+                anchors.margins: Tokens.padding.large
+                spacing: Tokens.spacing.small
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Tokens.spacing.small
+
+                    MaterialIcon {
+                        text: "visibility"
+                        color: Colours.palette.m3primary
+                        fontStyle: Tokens.font.icon.medium
+                        fill: 1
+                    }
+
+                    StyledText {
+                        Layout.fillWidth: true
+                        text: "Live App & Window Monitor"
+                        font: Tokens.font.body.builders.medium.weight(Font.Medium).build()
+                    }
+
+                    StyledText {
+                        text: `${ExtraConfig.openWindowsList.length} open windows`
+                        color: Colours.palette.m3outline
+                        font: Tokens.font.label.small
+                    }
+                }
+
+                StyledText {
+                    Layout.fillWidth: true
+                    text: "Click any open app below to auto-switch modes when its window opens and restore Balanced when closed (ignores minimized tray apps)."
+                    color: Colours.palette.m3onSurfaceVariant
+                    font: Tokens.font.label.small
+                    wrapMode: Text.WordWrap
+                }
+
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: Tokens.spacing.extraSmall
+
+                    Repeater {
+                        model: ExtraConfig.openWindowsList
+
+                        delegate: StyledRect {
+                            required property var modelData
+
+                            implicitWidth: winChipRow.implicitWidth + Tokens.padding.medium * 2
+                            implicitHeight: 28
+                            radius: Tokens.rounding.full
+                            color: Colours.palette.m3surfaceContainerHighest
+
+                            StateLayer {
+                                radius: parent.radius
+                                onClicked: {
+                                    root.showAddRoutine = true;
+                                    root.newRoutineType = "process";
+                                    root.newRoutineMatchMode = "window";
+                                    root.newRoutineRevertOnExit = true;
+                                    rNameInput.text = `Auto ${modelData.appClass}`;
+                                    rTriggerInput.text = modelData.appClass;
+                                }
+                            }
+
+                            RowLayout {
+                                id: winChipRow
+
+                                anchors.centerIn: parent
+                                spacing: 4
+
+                                MaterialIcon {
+                                    text: "add"
+                                    fontStyle: Tokens.font.icon.small
+                                    color: Colours.palette.m3primary
+                                }
+
+                                StyledText {
+                                    text: modelData.appClass
+                                    font: Tokens.font.label.small
+                                    color: Colours.palette.m3onSurface
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Repeater {
@@ -413,69 +511,174 @@ PageBase {
                 required property var modelData
                 required property int index
 
+                readonly property string runtimeStatus: {
+                    const st = ExtraConfig.routineRuntimeState[modelData.id];
+                    if (!st || !st.active)
+                        return "idle";
+                    return st.dismissed ? "dismissed" : "active";
+                }
+                readonly property bool isWindowMode: (modelData.matchMode || "window") === "window"
+                readonly property bool autoRestore: modelData.revertOnExit !== false
+
                 Layout.fillWidth: true
                 implicitHeight: rLayout.implicitHeight + Tokens.padding.large * 2
-                first: index === 0
 
-                RowLayout {
+                ColumnLayout {
                     id: rLayout
 
-                    anchors.fill: parent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
                     anchors.margins: Tokens.padding.large
-                    spacing: Tokens.spacing.medium
+                    spacing: Tokens.spacing.small
 
-                    StyledRect {
-                        implicitWidth: 40
-                        implicitHeight: 40
-                        radius: Tokens.rounding.full
-                        color: routineRow.modelData.enabled ? Colours.palette.m3tertiaryContainer : Colours.palette.m3surfaceContainerHighest
-
-                        MaterialIcon {
-                            anchors.centerIn: parent
-                            text: routineRow.modelData.triggerType === "time" ? "schedule" : (routineRow.modelData.triggerType === "wifi" ? "wifi" : "memory")
-                            color: routineRow.modelData.enabled ? Colours.palette.m3onTertiaryContainer : Colours.palette.m3outline
-                            fontStyle: Tokens.font.icon.medium
-                        }
-                    }
-
-                    ColumnLayout {
+                    RowLayout {
                         Layout.fillWidth: true
-                        spacing: 2
+                        spacing: Tokens.spacing.medium
 
-                        StyledText {
-                            Layout.fillWidth: true
-                            text: routineRow.modelData.name
-                            font: Tokens.font.body.builders.small.weight(Font.Medium).build()
-                            elide: Text.ElideRight
+                        StyledRect {
+                            implicitWidth: 40
+                            implicitHeight: 40
+                            radius: Tokens.rounding.full
+                            color: routineRow.runtimeStatus === "active"
+                                ? Colours.palette.m3primaryContainer
+                                : (routineRow.modelData.enabled ? Colours.palette.m3tertiaryContainer : Colours.palette.m3surfaceContainerHighest)
+
+                            MaterialIcon {
+                                anchors.centerIn: parent
+                                text: routineRow.modelData.triggerType === "time" ? "schedule" : (routineRow.modelData.triggerType === "wifi" ? "wifi" : "memory")
+                                color: routineRow.runtimeStatus === "active"
+                                    ? Colours.palette.m3onPrimaryContainer
+                                    : (routineRow.modelData.enabled ? Colours.palette.m3onTertiaryContainer : Colours.palette.m3outline)
+                                fontStyle: Tokens.font.icon.medium
+                            }
                         }
 
-                        StyledText {
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            text: `IF: ${routineRow.modelData.triggerLabel}  →  THEN: ${routineRow.modelData.actionLabel}`
-                            color: Colours.palette.m3outline
-                            font: Tokens.font.label.small
-                            wrapMode: Text.WordWrap
+                            spacing: 2
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Tokens.spacing.small
+
+                                StyledText {
+                                    Layout.fillWidth: true
+                                    text: routineRow.modelData.name
+                                    font: Tokens.font.body.builders.small.weight(Font.Medium).build()
+                                    elide: Text.ElideRight
+                                }
+
+                                // Live Lifecycle Status Pill
+                                StyledRect {
+                                    visible: Boolean(routineRow.modelData.enabled)
+                                    implicitWidth: stBadgeTxt.implicitWidth + 12
+                                    implicitHeight: 20
+                                    radius: 10
+                                    color: routineRow.runtimeStatus === "active"
+                                        ? Colours.palette.m3primaryContainer
+                                        : (routineRow.runtimeStatus === "dismissed" ? Colours.palette.m3secondaryContainer : Colours.palette.m3surfaceContainerHighest)
+
+                                    StyledText {
+                                        id: stBadgeTxt
+
+                                        anchors.centerIn: parent
+                                        text: routineRow.runtimeStatus === "active" ? "Active" : (routineRow.runtimeStatus === "dismissed" ? "Paused" : "Watching")
+                                        font: Tokens.font.label.small
+                                        color: routineRow.runtimeStatus === "active"
+                                            ? Colours.palette.m3onPrimaryContainer
+                                            : (routineRow.runtimeStatus === "dismissed" ? Colours.palette.m3onSecondaryContainer : Colours.palette.m3outline)
+                                    }
+                                }
+                            }
+
+                            StyledText {
+                                Layout.fillWidth: true
+                                text: `Open: ${routineRow.modelData.triggerLabel}  →  ${routineRow.modelData.actionLabel}  •  Close: ${routineRow.autoRestore ? "Auto-restore" : "Stay active"}`
+                                color: Colours.palette.m3outline
+                                font: Tokens.font.label.small
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+
+                        IconButton {
+                            visible: routineRow.runtimeStatus === "dismissed"
+                            icon: "refresh"
+                            type: IconButton.Text
+                            padding: Tokens.padding.extraSmall
+                            onClicked: ExtraConfig.resumeRoutine(routineRow.modelData.id)
+                        }
+
+                        IconButton {
+                            icon: "play_arrow"
+                            type: IconButton.Text
+                            padding: Tokens.padding.extraSmall
+                            onClicked: ExtraConfig.executeRoutineAction(routineRow.modelData)
+                        }
+
+                        IconButton {
+                            icon: "delete"
+                            type: IconButton.Text
+                            padding: Tokens.padding.extraSmall
+                            inactiveOnColour: Colours.palette.m3error
+                            onClicked: ExtraConfig.removeRoutine(routineRow.modelData.id)
+                        }
+
+                        StyledSwitch {
+                            checked: Boolean(routineRow.modelData.enabled)
+                            onToggled: ExtraConfig.setRoutineEnabled(routineRow.modelData.id, checked)
                         }
                     }
 
-                    IconButton {
-                        icon: "play_arrow"
-                        type: IconButton.Text
-                        padding: Tokens.padding.extraSmall
-                        onClicked: ExtraConfig.executeRoutineAction(routineRow.modelData)
-                    }
+                    // Lifecycle Rule Pills (When to Open / When to Close)
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 52
+                        spacing: Tokens.spacing.small
 
-                    IconButton {
-                        icon: "delete"
-                        type: IconButton.Text
-                        padding: Tokens.padding.extraSmall
-                        inactiveOnColour: Colours.palette.m3error
-                        onClicked: ExtraConfig.removeRoutine(routineRow.modelData.id)
-                    }
+                        StyledRect {
+                            visible: routineRow.modelData.triggerType === "process"
+                            implicitWidth: matchModeTxt.implicitWidth + 18
+                            implicitHeight: 24
+                            radius: 12
+                            color: routineRow.isWindowMode ? Colours.palette.m3secondaryContainer : Colours.palette.m3surfaceContainerHighest
 
-                    StyledSwitch {
-                        checked: Boolean(routineRow.modelData.enabled)
-                        onToggled: ExtraConfig.setRoutineEnabled(routineRow.modelData.id, checked)
+                            StateLayer {
+                                radius: parent.radius
+                                onClicked: ExtraConfig.updateRoutineProperty(routineRow.modelData.id, "matchMode", routineRow.isWindowMode ? "process" : "window")
+                            }
+
+                            StyledText {
+                                id: matchModeTxt
+
+                                anchors.centerIn: parent
+                                text: routineRow.isWindowMode ? "Open Window Only" : "Any Process (incl. Tray)"
+                                font: Tokens.font.label.small
+                                color: routineRow.isWindowMode ? Colours.palette.m3onSecondaryContainer : Colours.palette.m3onSurfaceVariant
+                            }
+                        }
+
+                        StyledRect {
+                            visible: routineRow.modelData.actionType === "mode"
+                            implicitWidth: revertTxt.implicitWidth + 18
+                            implicitHeight: 24
+                            radius: 12
+                            color: routineRow.autoRestore ? Colours.palette.m3primaryContainer : Colours.palette.m3surfaceContainerHighest
+
+                            StateLayer {
+                                radius: parent.radius
+                                onClicked: ExtraConfig.updateRoutineProperty(routineRow.modelData.id, "revertOnExit", !routineRow.autoRestore)
+                            }
+
+                            StyledText {
+                                id: revertTxt
+
+                                anchors.centerIn: parent
+                                text: routineRow.autoRestore ? "Auto-Restore on Close: On" : "Auto-Restore on Close: Off"
+                                font: Tokens.font.label.small
+                                color: routineRow.autoRestore ? Colours.palette.m3onPrimaryContainer : Colours.palette.m3onSurfaceVariant
+                            }
+                        }
                     }
                 }
             }
@@ -589,6 +792,41 @@ PageBase {
                     }
                 }
 
+                RowLayout {
+                    visible: root.newRoutineType === "process"
+                    Layout.fillWidth: true
+                    spacing: Tokens.spacing.small
+
+                    Repeater {
+                        model: [
+                            { id: "window", label: "Open Window Only (Ignores Tray)" },
+                            { id: "process", label: "Any Process (incl. Background)" }
+                        ]
+
+                        delegate: StyledRect {
+                            required property var modelData
+                            readonly property bool active: root.newRoutineMatchMode === modelData.id
+
+                            Layout.fillWidth: true
+                            implicitHeight: 30
+                            radius: Tokens.rounding.small
+                            color: active ? Colours.palette.m3secondaryContainer : Colours.palette.m3surfaceContainerHighest
+
+                            StateLayer {
+                                radius: parent.radius
+                                onClicked: root.newRoutineMatchMode = modelData.id
+                            }
+
+                            StyledText {
+                                anchors.centerIn: parent
+                                text: modelData.label
+                                color: active ? Colours.palette.m3onSecondaryContainer : Colours.palette.m3onSurface
+                                font: Tokens.font.label.small
+                            }
+                        }
+                    }
+                }
+
                 StyledText {
                     text: "2. Action to Execute (THEN):"
                     color: Colours.palette.m3primary
@@ -681,6 +919,35 @@ PageBase {
                     }
                 }
 
+                RowLayout {
+                    visible: root.newRoutineActionType === "mode"
+                    Layout.fillWidth: true
+                    spacing: Tokens.spacing.small
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 0
+
+                        StyledText {
+                            text: "Auto-restore previous mode when closed"
+                            font: Tokens.font.body.small
+                            color: Colours.palette.m3onSurface
+                        }
+
+                        StyledText {
+                            text: "Automatically switches back (e.g. to Balanced) when app window closes or schedule ends"
+                            font: Tokens.font.label.small
+                            color: Colours.palette.m3outline
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+
+                    StyledSwitch {
+                        checked: root.newRoutineRevertOnExit
+                        onToggled: root.newRoutineRevertOnExit = checked
+                    }
+                }
+
                 StyledRect {
                     Layout.alignment: Qt.AlignRight
                     implicitWidth: addRoutineBtnTxt.implicitWidth + Tokens.padding.large * 2
@@ -695,7 +962,7 @@ PageBase {
                             if (!trigVal)
                                 return;
                             const trigLabel = root.newRoutineType === "process"
-                                ? `App: ${trigVal}`
+                                ? `${root.newRoutineMatchMode === "window" ? "Window" : "Process"}: ${trigVal}`
                                 : (root.newRoutineType === "time" ? `${trigVal}` : `Wi-Fi: ${trigVal}`);
 
                             let actVal = "";
@@ -718,7 +985,9 @@ PageBase {
                                 trigLabel,
                                 root.newRoutineActionType,
                                 actVal,
-                                actLabel
+                                actLabel,
+                                root.newRoutineType === "process" ? root.newRoutineMatchMode : root.newRoutineType,
+                                root.newRoutineRevertOnExit
                             );
                             rNameInput.text = "";
                             rTriggerInput.text = "";

@@ -33,7 +33,7 @@
 - **Modes & Automated If/Then Routines (`Modes & Routines`)**
   - Built-in usage profiles (**Balanced**, **Gaming & Turbo**, **Work & Focus**, **Developer**, **Cinema & Media**, **Night & Battery Saver**) that synchronize Power, Cooling, Equalizer, Game Mode, DND, and Night Light.
   - **Adaptive Solid UI:** Entering **Game Mode** or **Battery Saver** automatically switches panels to a crisp opaque surface (disabling blur and transparency) and restores your glass theme when switching back.
-  - Automatic triggers based on **time schedule**, **running app/game process**, or **Wi-Fi SSID**.
+  - **Smart Lifecycle & App Monitor:** Tracks open Hyprland windows (ignoring minimized tray background processes like Steam tray), auto-restores your previous mode when the app/window closes, and respects manual mode overrides until the app restarts.
 - **10-Band PipeWire Studio Equalizer (`Audio & Studio Equalizer`)**
   - Runs stably as a user `systemd-run` PipeWire filter chain (`caelestia-eq.service`) with 10 presets (*Cinema Surround*, *Bass Boost*, *Rock*, *Vocal*, *Gaming*, etc.), volume overdrive (`up to 150%`), channel balance, and mic noise cancellation.
 - **Complete System Control Center (`Nexus`)**
