@@ -79,6 +79,13 @@ One-click system profiles (**Balanced**, **Gaming & Turbo**, **Work & Focus**, *
 
 ---
 
+### Live Auto-Trigger Demo: Steam → Automatic Gaming Boost
+When **Steam** (or `gamescope` / `cs2` / `dota2`) launches on any workspace (e.g. Workspace 3), the enabled **If/Then Process Routine** detects it automatically and switches the left taskbar icon, **Gaming & Turbo** mode, and **Max Speed** profile on without manual input — keeping the Ryzen CPU cool at `56°C`.
+
+![Auto Gaming Mode on Steam Launch](assets/screenshots/steam-auto-boost.png)
+
+---
+
 ### 10-Band Studio Equalizer
 PipeWire 10-band DSP filter chain (`caelestia-eq.service`) with 10 instant presets, Bass/Treble boost, volume overdrive up to `150%`, channel balance, and mic noise cancellation.
 
