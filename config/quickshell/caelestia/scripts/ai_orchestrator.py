@@ -639,14 +639,14 @@ class Orchestrator:
             desktop_rule = "Desktop GUI actions are DISABLED; use CLI/files only."
         elif wants_visual:
             desktop_rule = (
-                "VISUAL REAL-TIME CURSOR MODE ACTIVE (FAST LANE):\n"
-                "- Use `caelestia-desktop` with `--agent \"Meow AI\"` so live Ghost Cursors track your work without blinking out.\n"
-                "- SPEED RULE #1 — 1-COMMAND YOUTUBE & DOCX HELPERS:\n"
-                "  * To search & play a YouTube song/video visually: ALWAYS run `caelestia-desktop yt-play \"<song/video query>\" --agent \"Meow AI\"` in ONE command (skips search header `--min-y 185`, waits safely for autoplay, verifies `Corked: no`). NEVER open `youtube.com` homepage or manually screenshot search results!\n"
-                "  * To save/copy content to Word (`.docx`, since LibreOffice/Word GUI are not installed): write body text to `/tmp/doc_body.txt` and run `caelestia-desktop write-docx ~/Documents/<name>.docx --title \"<Title>\" --file /tmp/doc_body.txt`!\n"
-                "- SPEED RULE #2 — BATCH COMMANDS: Combine steps inside ONE shell call instead of separate turns. For UI controls, use `click-text \"<label>\" --window <app> --min-y 185 --wait 5 --agent \"Meow AI\"`.\n"
-                "- FALLBACK ONLY: If `click-text` / `yt-play` returns error, run `caelestia-desktop screen --grid --fast --out /tmp/ai_screen.jpg --agent \"Meow AI\"` + `read_file` -> `click <x> <y> --agent \"Meow AI\"`.\n"
-                "- SAFETY RULE: NEVER run `caelestia shell lock lock` inside your commands — any screen lock executes automatically ONLY AFTER verification passes!"
+                "HUMAN-LIKE VISUAL GUI MODE ACTIVE:\n"
+                "- USER-FACING APP TASKS (browsing web articles, reading/scrolling, copying text, pasting into LibreOffice/Word/Editor, playing YouTube): DO THEM VISIBLY ON SCREEN like a human using `caelestia-desktop` + Ghost Cursors (`--agent Browser`, `--agent Editor`). Do NOT silently bypass with headless `search_web` + `write-docx` unless GUI is blocked!\n"
+                "  * Browse/read/scroll/copy web article visually: `caelestia-desktop web-copy \"<topic query>\" --agent Browser`\n"
+                "  * Open compatible OS Office/Editor (`lowriter`/`libreoffice` > `onlyoffice` > `wps` > `abiword` > `kate`) & visually paste (`Ctrl+V`) + save `.docx`: `caelestia-desktop office-paste --docx ~/Documents/<Name>.docx --title \"<Title>\" --agent Editor`\n"
+                "  * YouTube visual search & verified playback: `caelestia-desktop yt-play \"<song/video query>\" --agent Browser`\n"
+                "- BACKGROUND SYSTEM CONTROLS (system modes, brightness, volume, telemetry, service checks): USE FAST CLI/IPC directly (`caelestia shell modes activate`, `brightnessctl`, `wpctl`, `pactl`) for instant execution.\n"
+                "- FALLBACK ONLY: If `click-text` / `web-copy` / `yt-play` returns error, inspect with `caelestia-desktop screen --grid --fast --out /tmp/ai_screen.jpg --agent \"Meow AI\"` + `read_file` -> `click`.\n"
+                "- SAFETY RULE: NEVER run `caelestia shell lock lock` inside your commands — screen lock runs automatically ONLY AFTER verification passes!"
             )
         else:
             desktop_rule = "Desktop GUI control (`caelestia-desktop`) is ALLOWED."
@@ -1344,37 +1344,38 @@ class Orchestrator:
                 else ""
             )
 
-            # Fast Parallel Split: Web Research/Word Doc + YouTube Playback (cuts 100s single-loop down to ~20s!)
+            # Ordered Human-Like Flow: Stage 1 Browse+Scroll+Copy in Firefox -> Stage 2 Paste into compatible Office/Editor + Play YouTube
             if self.allow_desktop and has_research_doc and has_youtube_play:
-                self.logger.write(f"Local router -> parallel Research/Doc + YouTube tracks (barrier={final_barrier}).", "\033[1;36m")
+                self.logger.write(f"Local router -> human-like Browser web-copy -> Office paste + YouTube tracks (barrier={final_barrier}).", "\033[1;36m")
                 multi_triage = {
                     "plan_summary": (
-                        "Đang chạy song song 2 phân hệ: tìm bài viết tạo file Word (.docx) và mở phát video trên YouTube."
+                        "Đang thao tác trực quan như người dùng: mở trình duyệt cuộn đọc bài viết, sao chép sang phần mềm soạn thảo tương thích, rồi phát YouTube."
                         if self.is_vi()
-                        else "Running Research/Docx creation and YouTube visual playback in parallel."
+                        else "Operating apps like a human: browse/scroll/copy article, paste into Office/Editor, then play YouTube."
                     ),
-                    "success_criteria": "Valid .docx saved in ~/Documents/ and YouTube video actively playing (Corked: no).",
+                    "success_criteria": "Article copied visually via Firefox, pasted into compatible Office/Editor (.docx saved), and YouTube playing (Corked: no).",
                     "collaborators": [
                         {
-                            "role_name": "Research",
+                            "role_name": "Browser",
                             "prompt": (
-                                "Handle ONLY searching the requested article and creating the `.docx` Word file cleanly: "
-                                "1) Perform at most 1 concise `search_web` call on the topic, write structured summary to `/tmp/doc_body.txt`. "
-                                "2) Remember from AGENTS.md no MS Word/LibreOffice GUI is installed — immediately create the Word document in 1 command: "
-                                "`caelestia-desktop write-docx ~/Documents/<TopicName>.docx --title \"<Title>\" --file /tmp/doc_body.txt` and verify non-empty size. Do NOT launch Firefox or touch YouTube!"
+                                "STAGE 1 ONLY (Act visually like a human in Firefox using `--agent Browser`): "
+                                "Run `caelestia-desktop web-copy \"<topic search query>\" --agent Browser` so Firefox launches visibly, clicks a matching article, scrolls down reading, and copies text (`Ctrl+A`/`Ctrl+C`) to clipboard! "
+                                "If `web-copy` reports CAPTCHA/blocked, STOP cleanly and inform user (never bypass CAPTCHA). Do NOT open YouTube yet (Stage 2 handles Office paste + YouTube)."
                                 + barrier_warn
                             ),
                             "parallel": True,
                         },
                         {
-                            "role_name": "Browser",
+                            "role_name": "Editor",
                             "prompt": (
-                                "Handle ONLY the YouTube video playback cleanly in ONE shell call using `caelestia-desktop yt-play \"<song/video query>\" --agent Browser`! "
-                                "`yt-play` already launches Firefox search, skips the header (`--min-y 185`), clicks visually with Ghost Cursor, waits safely for autoplay, and verifies `Corked: no`. "
-                                "If `yt-play` returns error, inspect once with `screen --grid --fast` and fix. Report exact window title and playback state."
+                                "STAGE 2 (Runs right after Stage 1 copied clipboard text): "
+                                "1) Open the highest-priority compatible Office/Word app on this OS and visibly paste (`Ctrl+V`) + save `.docx` in ONE command: "
+                                "`caelestia-desktop office-paste --docx ~/Documents/<TopicName>.docx --title \"<Title>\" --agent Editor`! "
+                                "2) In the SAME step right after `office-paste`, play the requested YouTube song visibly: "
+                                "`caelestia-desktop yt-play \"<song query>\" --agent Browser`! Report both exact app used, `.docx` path, and verified YouTube `playing: true`."
                                 + barrier_warn
                             ),
-                            "parallel": True,
+                            "parallel": False,
                         },
                     ],
                 }

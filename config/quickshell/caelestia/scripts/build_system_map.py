@@ -79,7 +79,7 @@ def main():
 - **Installed Apps & Tools:**
   - Browsers: {', '.join(apps['browsers']) or 'none'}
   - Editors / Office CLI: {', '.join(apps['editors'] + apps['office_data']) or 'python3'}
-  - Office GUI Apps (Word/Writer): {', '.join(apps['office_gui']) or 'NONE installed (create .docx directly in ~/Documents/ via caelestia-desktop write-docx)'}
+  - Office GUI Apps (Word/Writer): {', '.join(apps['office_gui']) or 'NONE installed yet (compatible fallback: kate/code + save .docx via office-paste --docx)'}
   - Media / Audio CLI: {', '.join(apps['media_cli']) or 'wpctl'}
   - GUI Automation: {', '.join(apps['desktop_tools'])}
 
@@ -93,14 +93,17 @@ def main():
 - **Telemetry / CPU:** `caelestia-telemetry` (safe thermal/fan/GPU readout), `scxctl get`
 
 ## 3. Real-Time Multi-Cursor Computer-Use Protocol (`caelestia-desktop`)
-- Every `caelestia-desktop` command supports `--agent <Tag>` (e.g., `--agent "Meow AI"`, `--agent Browser`, `--agent Control`) to render distinct color-coded live 120Hz pointers & click ripples (primary cursor stays alive throughout the task; parallel workers add auxiliary cursors via `flock`).
-- **Fast Helpers (1-Command, Zero Exploration):**
-  - YouTube Search + Play + Audio Check (`min-y=185` skips search bar): `caelestia-desktop yt-play "<song/video query>" --agent Browser`
-  - Instant Word `.docx` Generator (zero dependencies): `caelestia-desktop write-docx ~/Documents/<file>.docx --title "<Title>" --file /tmp/body.txt`
+- **Core Operating Principle:**
+  - **User-Facing Apps (Web browsing/articles, Copy/Paste, LibreOffice/Word/Editors, YouTube/Media): OPERATE VISUALLY LIKE A HUMAN** with live cursors (`--agent Browser`, `--agent Editor`). Do NOT silently bypass visible browsing/copying with headless API scraping unless the GUI step is blocked/CAPTCHA-gated!
+  - **System Controls (Modes, Brightness, Volume, Audio Verify, Lock Screen): USE FAST CLI/IPC** (`caelestia shell modes activate`, `brightnessctl`, `wpctl`, `pactl`) for instant `<0.2s` execution.
+- **Human-Like App Helpers (Visual, 1-Command Each):**
+  - Search Web -> Click Article -> Scroll -> `Ctrl+A`/`Ctrl+C`: `caelestia-desktop web-copy "<query>" [--engine ddg|google] --agent Browser`
+  - Open Highest-Priority Compatible Office/Editor (`lowriter`/`libreoffice` > `onlyoffice` > `wps` > `abiword` > `kate`) -> `Ctrl+V` Paste -> Save `.docx`: `caelestia-desktop office-paste --docx ~/Documents/<file>.docx --title "<Title>" --agent Editor`
+  - YouTube Search + Play + Audio Check (`--min-y 185` skips search bar): `caelestia-desktop yt-play "<song/video query>" --agent Browser`
+  - Headless `.docx` Generator (fallback only): `caelestia-desktop write-docx ~/Documents/<file>.docx --title "<Title>" --file /tmp/body.txt`
 - **Fast Text Clicker (`~0.8s`, Zero Vision Wait):**
-  - `caelestia-desktop click-text "<text>" [--window firefox|quickshell] [--min-y 185] [--wait 5] [--agent <Tag>]` -> accent-insensitive OCR + smooth glide + click in ONE command!
+  - `caelestia-desktop click-text "<text>" [--window firefox|quickshell|libreoffice] [--min-y 185] [--wait 5] [--agent <Tag>]` -> accent-insensitive OCR + smooth glide + click in ONE command!
   - `caelestia-desktop find "<text>" [--window <app>] [--min-y 185] [--wait 3]` -> returns exact pixel `(x, y)` coordinates.
-- **Zero-Screenshot Browser Rule:** NEVER open `youtube.com` homepage + take screenshots! For YouTube playback, ALWAYS use `caelestia-desktop yt-play "<query>" --agent Browser` (or launch `https://www.youtube.com/results?search_query=<query>` + `click-text ... --min-y 185`).
 - **Fallback GUI Actions (when element has no text label, like thumbnails/icons):**
   - Fast grid screenshot + 1px click: `caelestia-desktop screen --grid --fast --out /tmp/ai_screen.jpg --agent Browser` -> `view_file` -> `caelestia-desktop click <x> <y> --agent Browser`
   - Window / Type / Keys / Scroll: `caelestia-desktop windows`, `launch`, `focus`, `type "<text>" --enter`, `key ctrl+l`, `scroll -5 --x <x> --y <y>`.

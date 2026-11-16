@@ -622,26 +622,38 @@ def cmd_yt_play(args):
         sys.exit(1)
 
 
-def cmd_write_docx(args):
-    """Create a valid clean Word .docx file using only Python stdlib zipfile + XML (0 external deps)."""
+def detect_office_app() -> tuple[str | None, list[str] | None, bool]:
+    """Return (binary_name, launch_cmd, is_word_processor) prioritized for OS-compatible Word/Office apps."""
     import shutil
+    candidates = [
+        ("lowriter", ["lowriter"], True),
+        ("libreoffice", ["libreoffice", "--writer"], True),
+        ("onlyoffice-desktopeditors", ["onlyoffice-desktopeditors"], True),
+        ("wps", ["wps"], True),
+        ("abiword", ["abiword"], True),
+        ("kate", ["kate", "--new"], False),
+        ("code", ["code", "--new-window"], False),
+    ]
+    for name, cmd, is_wp in candidates:
+        if shutil.which(name):
+            return name, cmd, is_wp
+    return None, None, False
+
+
+def _build_docx_file(out_path: Path, title: str, body_text: str) -> int:
+    """Create a valid Word .docx archive using pure Python stdlib zipfile + XML."""
     import zipfile
     from xml.sax.saxutils import escape
 
-    out_path = Path(args.path).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    body_text = args.text or ""
-    if args.file:
-        body_text = Path(args.file).expanduser().read_text(encoding="utf-8")
-
     paras = []
-    if args.title:
+    if title:
         paras.append(
             f'<w:p><w:pPr><w:spacing w:after="160"/></w:pPr>'
             f'<w:r><w:rPr><w:b/><w:sz w:val="32"/></w:rPr>'
-            f'<w:t xml:space="preserve">{escape(args.title)}</w:t></w:r></w:p>'
+            f'<w:t xml:space="preserve">{escape(title)}</w:t></w:r></w:p>'
         )
-    for line in body_text.splitlines():
+    for line in (body_text or "").splitlines():
         s = line.rstrip()
         if not s:
             paras.append("<w:p/>")
@@ -682,11 +694,184 @@ def cmd_write_docx(args):
         zf.writestr("[Content_Types].xml", ct_xml)
         zf.writestr("_rels/.rels", rels_xml)
         zf.writestr("word/document.xml", doc_xml)
+    return out_path.stat().st_size
 
-    office_bin = next((shutil.which(b) for b in ("lowriter", "libreoffice", "onlyoffice-desktopeditors", "wps") if shutil.which(b)), None)
-    if args.open and office_bin:
-        subprocess.Popen([office_bin, str(out_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    print(json.dumps({"ok": True, "path": str(out_path), "bytes": out_path.stat().st_size, "office_app": office_bin}, ensure_ascii=False))
+
+def cmd_write_docx(args):
+    """Create a valid clean Word .docx file using only Python stdlib zipfile + XML (0 external deps)."""
+    out_path = Path(args.path).expanduser()
+    body_text = args.text or ""
+    if args.file:
+        body_text = Path(args.file).expanduser().read_text(encoding="utf-8")
+    size = _build_docx_file(out_path, args.title or "", body_text)
+    app_name, cmd, is_wp = detect_office_app()
+    office_bin = app_name if is_wp else None
+    if args.open and office_bin and cmd:
+        subprocess.Popen([*cmd, str(out_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    print(json.dumps({"ok": True, "path": str(out_path), "bytes": size, "office_app": office_bin}, ensure_ascii=False))
+
+
+def cmd_web_copy(args):
+    """Browse like a human: launch Firefox search, click a real article, scroll down visibly, and copy clean text via Ctrl+A/Ctrl+C."""
+    query = args.query.strip()
+    search_url = (
+        f"https://www.google.com/search?q={quote_plus(query)}"
+        if args.engine == "google"
+        else f"https://duckduckgo.com/?q={quote_plus(query)}&ia=web"
+    )
+    w, h, _ = get_monitor_info()
+    notify_hud(w // 2, h // 2, "launch", f"Tìm: {query[:20]}", False, args.agent)
+    subprocess.Popen(["firefox", search_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    time.sleep(2.0)
+
+    q_words = [tok for tok in strip_accents(query).split() if len(tok) >= 2]
+    candidates = []
+    if len(q_words) >= 3:
+        candidates.append(" ".join(q_words[:3]))
+    if len(q_words) >= 2:
+        candidates.append(" ".join(q_words[:2]))
+    candidates.extend(q_words[:2])
+
+    clicked_title = ""
+    with pointer_lock():
+        hypr_focus("firefox")
+        time.sleep(0.2)
+        search_title = _firefox_title()
+        hits = []
+        deadline = time.time() + 6.0
+        while time.time() < deadline and not hits:
+            # Scan whole Firefox window first for CAPTCHA guard (never bypass!)
+            chk = _ocr_scan_once("unusual traffic", "firefox", "auto") or _ocr_scan_once("verify you are human", "firefox", "auto")
+            if chk:
+                print(json.dumps({"ok": False, "blocked": "captcha", "error": "Anti-bot / CAPTCHA verification detected"}))
+                sys.exit(2)
+            for cand in candidates:
+                raw_hits = _ocr_scan_once(cand, "firefox", "auto", min_y=230)
+                # Prefer longer article headline lines over short single-word nav buttons
+                good = [item for item in raw_hits if len(item["text"].strip()) >= 18]
+                hits = good or raw_hits
+                if hits:
+                    break
+            if not hits:
+                time.sleep(0.45)
+
+        if not hits:
+            print(json.dumps({"ok": False, "error": f"No article link found visually for '{query}'"}))
+            sys.exit(1)
+
+        target = hits[0]
+        clicked_title = target["text"]
+        ax, ay = calibrated_move(target["x"], target["y"], "Mở bài viết", args.agent)
+        notify_hud(ax, ay, "click", "Click bài viết", True, args.agent)
+        run(["ydotool", "click", BUTTON_CODES["left"]])
+
+    # Wait cleanly for article page load then scroll visibly like a human reading
+    time.sleep(2.4)
+    with pointer_lock():
+        hypr_focus("firefox")
+        time.sleep(0.15)
+        fc = find_client("firefox")
+        cx = int(fc["at"][0] + fc["size"][0] / 2) if fc else w // 2
+        cy = int(fc["at"][1] + fc["size"][1] / 2) if fc else h // 2
+        calibrated_move(cx, cy, "Đọc & cuộn trang", args.agent)
+        for _ in range(max(1, args.scrolls)):
+            notify_hud(cx, cy, "scroll", "Cuộn trang đọc bài", False, args.agent)
+            run(["ydotool", "mousemove", "-w", "-x", "0", "-y", "-5"])
+            time.sleep(0.45)
+
+        # Toggle Reader View? No, standard Ctrl+A -> Ctrl+C works universally on any page visibly!
+        notify_hud(cx, cy, "click", "Chọn nội dung (Ctrl+A)", True, args.agent)
+        run(["ydotool", "click", BUTTON_CODES["left"]])
+        time.sleep(0.08)
+        press_combo("ctrl+a")
+        time.sleep(0.15)
+        notify_hud(cx, cy, "key", "Sao chép (Ctrl+C)", False, args.agent)
+        press_combo("ctrl+c")
+        time.sleep(0.25)
+
+    clip = run(["wl-paste", "--no-newline"]).stdout
+    lines = [ln.strip() for ln in clip.splitlines() if len(ln.strip()) >= 3]
+    clean_clip = "\n".join(lines[:220])
+    if clean_clip:
+        subprocess.run(["wl-copy", "--", clean_clip], check=False)
+
+    if len(clean_clip.strip()) < 80:
+        print(json.dumps({"ok": False, "error": "Clipboard text too short after copy", "chars": len(clean_clip)}))
+        sys.exit(1)
+
+    print(json.dumps({
+        "ok": True,
+        "matched_link": clicked_title,
+        "page_title": _firefox_title(),
+        "changed_page": _firefox_title() != search_title,
+        "chars": len(clean_clip),
+        "preview": clean_clip[:220],
+    }, ensure_ascii=False))
+
+
+def cmd_office_paste(args):
+    """Open highest-priority compatible Office/Editor app on OS, visually paste clipboard via Ctrl+V, and optionally save .docx."""
+    clip = run(["wl-paste", "--no-newline"]).stdout
+    if args.source_file:
+        clip = Path(args.source_file).expanduser().read_text(encoding="utf-8")
+    if not clip.strip():
+        print(json.dumps({"ok": False, "error": "Clipboard is empty; nothing to paste"}))
+        sys.exit(1)
+
+    app_name, cmd, is_wp = detect_office_app()
+    saved_docx = None
+    if args.docx:
+        out_p = Path(args.docx).expanduser()
+        _build_docx_file(out_p, args.title or out_p.stem.replace("_", " "), clip)
+        saved_docx = str(out_p)
+
+    if not app_name or not cmd:
+        print(json.dumps({"ok": bool(saved_docx), "office_installed": False, "app": None, "docx": saved_docx}))
+        return
+
+    w, h, _ = get_monitor_info()
+    notify_hud(w // 2, h // 2, "launch", f"Mở {app_name}", False, args.agent)
+    launch_cmd = list(cmd)
+    # If real Word processor (LibreOffice/OnlyOffice) AND docx was built, open that .docx directly or open blank & Ctrl+V
+    if is_wp and saved_docx:
+        launch_cmd.append(saved_docx)
+    subprocess.Popen(launch_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+    # Wait for window to appear cleanly
+    win = None
+    match_token = "libreoffice" if "libreoffice" in app_name or app_name == "lowriter" else app_name
+    deadline = time.time() + 6.5
+    while time.time() < deadline:
+        win = find_client(match_token)
+        if win:
+            break
+        time.sleep(0.35)
+
+    pasted = False
+    if win:
+        with pointer_lock():
+            hypr_focus(match_token)
+            time.sleep(0.35)
+            cx = int(win["at"][0] + win["size"][0] / 2)
+            cy = int(win["at"][1] + win["size"][1] / 2)
+            ax, ay = calibrated_move(cx, cy, f"Dán vào {app_name}", args.agent)
+            notify_hud(ax, ay, "click", "Chọn vùng soạn thảo", True, args.agent)
+            run(["ydotool", "click", BUTTON_CODES["left"]])
+            time.sleep(0.12)
+            if not (is_wp and saved_docx):
+                subprocess.run(["wl-copy", "--", clip], check=False)
+                time.sleep(0.08)
+                notify_hud(ax, ay, "key", "Dán nội dung (Ctrl+V)", False, args.agent)
+                press_combo("ctrl+v")
+            pasted = True
+
+    print(json.dumps({
+        "ok": pasted or bool(saved_docx),
+        "app": app_name,
+        "is_word_processor": is_wp,
+        "pasted": pasted,
+        "docx": saved_docx,
+    }, ensure_ascii=False))
 
 
 def cmd_ocr(args):
@@ -795,6 +980,20 @@ def main():
     wdx.add_argument("--file", default="")
     wdx.add_argument("--open", action="store_true")
     wdx.set_defaults(func=cmd_write_docx)
+
+    wcp = sub.add_parser("web-copy", help="Browse visually in Firefox, click article link, scroll down, and copy text via Ctrl+A/Ctrl+C")
+    wcp.add_argument("query")
+    wcp.add_argument("--engine", choices=["ddg", "google"], default="ddg")
+    wcp.add_argument("--scrolls", type=int, default=2)
+    add_agent_arg(wcp)
+    wcp.set_defaults(func=cmd_web_copy)
+
+    ofp = sub.add_parser("office-paste", help="Open compatible Office/Editor app on OS, visually paste clipboard via Ctrl+V, and optionally save .docx")
+    ofp.add_argument("--docx", default="", help="Optional .docx output path under ~/Documents/")
+    ofp.add_argument("--title", default="")
+    ofp.add_argument("--source-file", default="")
+    add_agent_arg(ofp)
+    ofp.set_defaults(func=cmd_office_paste)
 
     op = sub.add_parser("ocr", help="Run tesseract OCR on current screen or region")
     op.add_argument("--region")
