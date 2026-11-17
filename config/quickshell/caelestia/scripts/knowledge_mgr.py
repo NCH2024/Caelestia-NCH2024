@@ -138,12 +138,54 @@ def record_run(user_task: str, elapsed_sec: float, ok: bool, summary: str, trace
             upsert_recipe(data, "LibreOffice Flatpak file access & Word styling", SEED_RECIPES[1]["lesson"], "flatpak_lo_paths")
         if "night light" in low and "setnightlight" in low:
             upsert_recipe(data, "Toggle Night Light without changing power mode", SEED_RECIPES[2]["lesson"], "nightlight_direct")
-    else:
-        if "privacy" in low or "msn" in low or "cookie" in low:
+        if re.search(r"\b(đóng|ngừng|dừng|tắt|close-app|stop-media)\b", low) and re.search(r"\b(ứng dụng|cửa sổ|video|youtube|firefox|kate|vlc|libreoffice|okular|gwenview|code)\b", low):
             upsert_recipe(
                 data,
-                "Bypass privacy-walled portals (MSN / cookie modals)",
-                "Reject MSN/privacy-wall stubs cleanly (`cares about your privacy`); advance to hits[1..2] direct tech news sites or escalate to Round-2 search_web recovery.",
+                "Clean app window close & media stop",
+                "Use `caelestia-desktop stop-media --close-tab` and `caelestia-desktop close-app <target> [--force]` (kills exact GUI PID or `flatpak kill`, NEVER `pkill -f`); verify `hyprctl clients -j`.",
+                "close_apps_stop_media",
+            )
+        if re.search(r"(fetch-images|--images|chèn.*ảnh|tải.*ảnh|kèm.*ảnh)", low):
+            upsert_recipe(
+                data,
+                "Fast 1-call verified topic images & .docx",
+                "Use `caelestia-desktop fetch-images \"<query>\" --count N --out /tmp/ai_img.jpg` (~2s) + `write-docx --images ...` instead of manual scraping loops.",
+                "fast_ddg_fetch_images",
+            )
+        if re.search(r"\b(kate|vs code|code|dolphin|okular|gwenview|vlc|btop|kcalc|konsole|meld|thunar)\b", low):
+            upsert_recipe(
+                data,
+                "Multi-app desktop workflow & verification",
+                "Launch installed apps (`kate`, `code`, `dolphin`, `vlc`, `okular`, `gwenview`, `kcalc`, `btop`) via `caelestia-desktop launch` & confirm open/closed via `hyprctl clients -j`.",
+                "multi_app_orchestration",
+            )
+        if re.search(r"(rồi dùng|dùng tên|dùng kết quả|rút ra|tính xem|so sánh.*với)", low):
+            upsert_recipe(
+                data,
+                "Chained multi-hop search without SERP trap",
+                "For dependent A->B->C queries or multi-app tasks, skip curated Round-1 `web-copy` and chain `search_web` + `write-docx --images` directly in `run_single_fast`.",
+                "chained_search_no_serp",
+            )
+        if re.search(r"\b(telemetry|nhiệt độ|scx|cửa sổ đang mở)\b", low):
+            upsert_recipe(
+                data,
+                "Batched local telemetry & state inspection",
+                "Batch `caelestia-telemetry`, `scxctl get`, `hyprctl clients -j`, `wpctl`, and `brightnessctl` into a single `run_command` call (<0.2s) instead of separate turns.",
+                "batch_telemetry_fast",
+            )
+        if re.search(r"\b(launch|ensure-workspace|workspace|kate|code|dolphin|vlc|okular|gwenview|kcalc|btop|libreoffice|firefox)\b", low):
+            upsert_recipe(
+                data,
+                "Hyprland workspace free-space guard before app launch",
+                "Always check workspace capacity via `caelestia-desktop ensure-workspace` or `caelestia-desktop launch <cmd>`; auto-switch to a new workspace if `>=2` tiled windows or `<820x480` room.",
+                "workspace_readability_guard",
+            )
+    else:
+        if "privacy" in low or "msn" in low or "cookie" in low or "duckduckgo" in low or "serp" in low:
+            upsert_recipe(
+                data,
+                "Bypass privacy-walled portals & SERP traps",
+                "Reject MSN/privacy modals and DuckDuckGo SERP self-copies (`duckduckgo.com/?`); advance to real sites (`gsmarena`, `sammobile`, `9to5google`) or escalate to Round-2 `search_web`.",
                 "avoid_privacy_walls",
             )
         if ("youtube" in low or "yt_fail" in low or "chưa xác nhận phát" in low) and ("corked" in low or "yt_fail" in low or "chưa xác nhận phát" in low):
@@ -176,7 +218,7 @@ def format_markdown_section() -> str:
     lines = [
         f"## 5. Self-Learned Machine Recipes ({len(recipes)} rules • {st.get('total_runs', 0)} runs, avg {st.get('avg_sec', 0)}s)"
     ]
-    for r in recipes[:14]:
+    for r in recipes[:16]:
         lines.append(f"- **{r['topic']}**: {r['lesson']}")
     return "\n".join(lines)
 

@@ -392,6 +392,7 @@ class Orchestrator:
     ) -> tuple[bool, str, str, str, str]:
         """Returns: (ok, output_text, err_text, effective_model, conversation_id)"""
         tried = set()
+        transient_tries = 0
         current_model = self.resolve_initial_model(role, preferred_model)
 
         if not current_model:
@@ -592,6 +593,16 @@ class Orchestrator:
                 ), current_model, captured_conv_id
 
             if failed:
+                if transient_tries < 2 and re.search(
+                    r"(temporary failure in name resolution|network issue connecting|not recognized as a known model|dial tcp: lookup)",
+                    combined_err,
+                    re.I,
+                ):
+                    transient_tries += 1
+                    tried.discard(current_model)
+                    self.logger.write(f"[{worker_label}] transient network/model lookup glitch; retrying in 3s (#{transient_tries})...", "\033[33m")
+                    time.sleep(3)
+                    continue
                 self.logger.write(f"[{worker_label}] exited with code {proc.returncode}: {err_text}", "\033[1;31m")
                 return False, output_text, err_text or f"agy exited with code {proc.returncode}", current_model, captured_conv_id
 
@@ -646,14 +657,27 @@ class Orchestrator:
     def verify_deterministic_claims(self, user_task: str, task_start_ts: float) -> tuple[bool, str]:
         """Hard OS-level verification gate BEFORE reporting complete or locking screen."""
         low = user_task.lower()
-        # 1. Verify Firefox YouTube playback is genuinely uncorked (Corked: no) & not stuck on /results
+        # 1. Verify Firefox YouTube playback is genuinely uncorked (unless task asks to stop/close video/browser)
+        wants_media_stop = bool(
+            re.search(
+                r"\b(ngừng|dừng|tắt|pause|stop|đóng|close)\b.{0,35}\b(video|nhạc|audio|youtube|firefox|trình duyệt|tab)\b"
+                r"|\b(video|nhạc|youtube|firefox|trình duyệt)\b.{0,25}\b(ngừng|dừng|tắt|pause|stop|đóng|close)\b",
+                low,
+            )
+        )
         if re.search(r"\b(youtube)\b", low) and re.search(r"\b(phát|mở|nghe|play)\b", low):
             out = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True).stdout
             ff_playing = any(
                 "firefox" in blk.lower() and "corked: no" in blk.lower()
                 for blk in out.split("Sink Input #")
             )
-            if not ff_playing:
+            if wants_media_stop and ff_playing:
+                return False, (
+                    "Yêu cầu có bước ngừng/đóng video nhưng Firefox vẫn đang phát âm thanh (`Corked: no`)."
+                    if self.is_vi()
+                    else "System check failed: user requested stopping video/Firefox, but audio is still playing."
+                )
+            if not wants_media_stop and not ff_playing:
                 return False, (
                     "Kiểm chứng hệ thống phát hiện Firefox/YouTube CHƯA phát âm thanh (`Corked: no` chưa hoạt động)."
                     if self.is_vi()
@@ -703,7 +727,11 @@ class Orchestrator:
                 "- USER-FACING APP TASKS (browsing web articles, reading/scrolling, copying text, pasting into LibreOffice/Word/Editor, playing YouTube): DO THEM VISIBLY ON SCREEN like a human using `caelestia-desktop` + Ghost Cursors (`--agent Browser`, `--agent Editor`). Do NOT silently bypass with headless `search_web` + `write-docx` unless GUI is blocked!\n"
                 "  * Browse/read/scroll/copy web article visually: `caelestia-desktop web-copy \"<topic query>\" --agent Browser`\n"
                 "  * Open compatible OS Office/Editor (`lowriter`/`libreoffice` > `onlyoffice` > `wps` > `abiword` > `kate`) & visually paste (`Ctrl+V`) + save `.docx`: `caelestia-desktop office-paste --docx ~/Documents/<Name>.docx --title \"<Title>\" --agent Editor`\n"
-                "  * YouTube visual search & verified playback: `caelestia-desktop yt-play \"<song/video query>\" --agent Browser`\n"
+                "  * YouTube visual search & verified playback: `caelestia-desktop yt-play \"<song/video query>\" [--fullscreen] [--screenshot /tmp/ai_yt_shot.jpg] --agent Browser`\n"
+                "  * Launch/focus/close installed desktop apps (`kate`, `code`, `dolphin`, `vlc`, `gwenview`, `okular`, `kcalc`, `btop`, `foot`): ALWAYS use `caelestia-desktop launch <cmd>` (or run `caelestia-desktop ensure-workspace` before `firefox` / GUI commands) so Hyprland switches to a fresh empty workspace whenever the current workspace has >=2 tiled windows or <820x480 readable room; close cleanly with `caelestia-desktop close-app <target> [--force]`\n"
+                "  * Stop/pause playing video/music & verify silent PipeWire: `caelestia-desktop stop-media [--close-tab] --agent Browser`\n"
+                "  * Download N verified topic images in 1 call (~2s): `caelestia-desktop fetch-images \"<query>\" --count N --out /tmp/ai_img.jpg`\n"
+                "- CHAINED MULTI-HOP TASKS (Find A -> get name B -> search B -> write files/open apps): Use `search_web` directly for fast accurate chained facts, then build `.docx` (`write-docx --images ...`) / launch target apps cleanly and verify `hyprctl clients -j`.\n"
                 "- BACKGROUND SYSTEM CONTROLS (system modes, brightness, volume, telemetry, service checks): USE FAST CLI/IPC directly (`caelestia shell modes activate`, `brightnessctl`, `wpctl`, `pactl`) for instant execution.\n"
                 "- FALLBACK ONLY: If `click-text` / `web-copy` / `yt-play` returns error, inspect with `caelestia-desktop screen --grid --fast --out /tmp/ai_screen.jpg --agent \"Meow AI\"` + `read_file` -> `click`.\n"
                 "- SAFETY RULE: NEVER run `caelestia shell lock lock` inside your commands — screen lock runs automatically ONLY AFTER verification passes!"
@@ -1447,7 +1475,7 @@ class Orchestrator:
                 + f"\nORIGINAL USER REQUEST:\n{clean_task}"
             )
             self.run_single_fast(recovery_prompt, "Đang chuyển hướng xử lý thông minh ở Lượt 2 dựa trên tri thức hệ thống...", final_barrier=final_barrier, task_start_ts=task_start_ts)
-            return "__ABORTED__"
+            return "__ESCALATED__"
 
         if wc_res.returncode != 0 or len(raw_text.strip()) < 400:
             return _escalate_round2(f"web-copy blocked or empty ({wc_info.get('error') or 'privacy_or_empty'})")
@@ -1673,9 +1701,24 @@ class Orchestrator:
                 else ""
             )
 
+            has_extra_apps_or_chain = bool(
+                re.search(
+                    r"(\.(?:json|html|md|txt|csv|py|conf|sh)\b|~/|"
+                    r"\b(?:kate|vs\s*code|vscode|dolphin|thunar|okular|gwenview|vlc|btop|kcalc|konsole|ark|meld|nexus|"
+                    r"telemetry|scx|cửa sổ đang mở|chụp ảnh màn hình desktop|"
+                    r"rồi dùng|dùng tên|dùng kết quả|rút ra|tính xem|tính toán|"
+                    r"chọn\s+\S+(?:\s+\S+){0,4}\s+để\s+tìm|"
+                    r"đóng\s+(?:ứng dụng|cửa sổ|tab|lại|libreoffice|firefox|kate|code|dolphin|gwenview|okular|vlc|kcalc|meld|konsole)|"
+                    r"ngừng\s+(?:video|phát|nhạc)|dừng\s+(?:video|phát)|tắt\s+(?:video|nhạc)|"
+                    r"close\s+\w+|stop\s+(?:video|media))\b)",
+                    low,
+                )
+            )
             # Overhauled Human-Like Web->Curated Word/Office (+ optional YouTube + Night Light/Mode) Pipeline (~20-28s total!)
-            if self.allow_desktop and has_research_doc:
+            if self.allow_desktop and has_research_doc and not has_extra_apps_or_chain:
                 curated_ans = self.try_curated_web_office_pipeline(user_task, clean_task, final_barrier, task_start_ts)
+                if curated_ans == "__ESCALATED__":
+                    return
                 if curated_ans == "__ABORTED__":
                     self._record_and_reflect_async(user_task, task_start_ts, False, "curated_web_word", "Aborted at safety/verification gate")
                     return

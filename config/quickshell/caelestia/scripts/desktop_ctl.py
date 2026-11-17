@@ -428,10 +428,77 @@ def cmd_focus(args):
         sys.exit(1)
 
 
+def ensure_spacious_workspace(target_app: str = "", min_w: int = 820, min_h: int = 480, max_windows: int = 1, agent: str = "Meow AI") -> dict:
+    """Check active Hyprland workspace free space/readability; switch to a clean empty workspace if crowded."""
+    try:
+        aw = json.loads(run(["hyprctl", "activeworkspace", "-j"]).stdout or "{}")
+        cur_ws = int(aw.get("id") or 1)
+        has_fs = bool(aw.get("hasfullscreen"))
+        clients = json.loads(run(["hyprctl", "clients", "-j"]).stdout or "[]")
+        workspaces = json.loads(run(["hyprctl", "workspaces", "-j"]).stdout or "[]")
+    except Exception:
+        return {"ok": True, "workspace": 1, "switched": False, "reason": "hyprctl_unavailable"}
+
+    tiled = [
+        c for c in clients
+        if int((c.get("workspace") or {}).get("id") or -1) == cur_ws
+        and c.get("mapped", True)
+        and not c.get("hidden", False)
+        and not c.get("floating", False)
+        and (c.get("size") or [0, 0])[0] >= 200
+        and (c.get("size") or [0, 0])[1] >= 150
+    ]
+
+    need_t = (target_app or "").lower().strip()
+    if need_t:
+        same_win = [
+            c for c in tiled
+            if need_t in str(c.get("class") or "").lower() or need_t in str(c.get("title") or "").lower()
+        ]
+        if same_win and not has_fs:
+            sz = same_win[0].get("size") or [0, 0]
+            if sz[0] >= min_w and sz[1] >= min_h:
+                return {"ok": True, "workspace": cur_ws, "switched": False, "reason": "target_already_spacious", "windows": len(tiled)}
+
+    too_small = any(
+        (c.get("size") or [0, 0])[0] < min_w or (c.get("size") or [0, 0])[1] < min_h
+        for c in tiled
+    )
+    half_risk = (len(tiled) == 1) and ((tiled[0].get("size") or [0, 0])[0] < 1150 or (tiled[0].get("size") or [0, 0])[1] < 650)
+    crowded = has_fs or (len(tiled) > max_windows) or too_small or half_risk
+    if not crowded:
+        return {"ok": True, "workspace": cur_ws, "switched": False, "reason": "workspace_spacious", "windows": len(tiled)}
+
+    used_ids = {int(w.get("id") or 0) for w in workspaces if int(w.get("windows") or 0) > 0}
+    used_ids.add(cur_ws)
+    new_ws = next((wid for wid in range(1, 21) if wid not in used_ids), cur_ws + 1)
+    run(["hyprctl", "dispatch", "workspace", str(new_ws)])
+    time.sleep(0.25)
+    mw, mh, _ = get_monitor_info()
+    notify_hud(mw // 2, 90, "desktop_windows", f"Workspace #{new_ws} (đủ rộng)", False, agent)
+    return {"ok": True, "workspace": new_ws, "prev_workspace": cur_ws, "switched": True, "reason": f"crowded({len(tiled)}_wins)", "windows": 0}
+
+
+def cmd_ensure_workspace(args):
+    res = ensure_spacious_workspace(
+        target_app=args.app or "",
+        min_w=args.min_w,
+        min_h=args.min_h,
+        max_windows=args.max_windows,
+        agent=args.agent,
+    )
+    print(json.dumps(res, ensure_ascii=False))
+
+
 def cmd_launch(args):
-    cmd = args.cmd
-    w, h, _ = get_monitor_info()
+    cmd = list(args.cmd or [])
+    keep_ws = False
+    if "--keep-workspace" in cmd:
+        keep_ws = True
+        cmd = [c for c in cmd if c != "--keep-workspace"]
     app_name = Path(cmd[0]).name if cmd else "app"
+    ws_info = {} if keep_ws else ensure_spacious_workspace(target_app=app_name, agent=args.agent)
+    w, h, _ = get_monitor_info()
     notify_hud(w // 2, h // 2, "launch", f"Mở {app_name}", False, args.agent)
     subprocess.Popen(
         cmd,
@@ -439,7 +506,7 @@ def cmd_launch(args):
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    print(json.dumps({"ok": True, "launched": cmd}))
+    print(json.dumps({"ok": True, "launched": cmd, "workspace": ws_info}, ensure_ascii=False))
 
 
 def cmd_move(args):
@@ -555,6 +622,7 @@ def _firefox_audio_corked() -> tuple[bool, bool]:
 def cmd_yt_play(args):
     """Visually open YouTube search, OCR-click result below header (min_y=185), wait safely for autoplay, and verify audio."""
     query = args.query.strip()
+    ensure_spacious_workspace(target_app="firefox", agent=args.agent)
     url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
     w, h, _ = get_monitor_info()
     notify_hud(w // 2, h // 2, "launch", f"YouTube: {query[:20]}", False, args.agent)
@@ -1043,8 +1111,12 @@ def _fetch_verified_ddg_images(query: str, base_out: Path, count: int = 1, exist
     return saved
 
 
-def _is_privacy_or_stub(text: str) -> bool:
+def _is_privacy_or_stub(text: str, page_url: str = "", page_title: str = "") -> bool:
     low = (text or "").lower()
+    url_low = (page_url or "").lower()
+    ttl_low = (page_title or "").lower()
+    if "duckduckgo.com/?" in url_low or "google.com/search?" in url_low or "duckduckgo" in ttl_low:
+        return True
     if len(low.strip()) < 450:
         return True
     wall_markers = (
@@ -1055,6 +1127,9 @@ def _is_privacy_or_stub(text: str) -> bool:
         "we and our partners process data",
         "enable javascript to view this page",
     )
+    serp_markers = ("all regions", "any time", "duckassist", "duckduckgo", "search results")
+    if sum(1 for s in serp_markers if s in low) >= 2 and len(low) < 3500:
+        return True
     hits = sum(1 for w in wall_markers if w in low)
     return hits >= 1 and len(low) < 2200
 
@@ -1088,6 +1163,7 @@ def _clean_copied_article(clip: str) -> str:
 def cmd_web_copy(args):
     """Browse like a human: launch Firefox search, click a real article, scroll down visibly, and copy clean text via Ctrl+A/Ctrl+C."""
     query = args.query.strip()
+    ensure_spacious_workspace(target_app="firefox", agent=args.agent)
     search_url = (
         f"https://www.google.com/search?q={quote_plus(query)}"
         if args.engine == "google"
@@ -1145,14 +1221,17 @@ def cmd_web_copy(args):
     img_count_target = max(1, min(6, int(getattr(args, "image_count", 1) or 1)))
     save_img_base = Path(args.save_image).expanduser() if getattr(args, "save_image", "") else None
 
-    def _visit_and_extract(hit_obj: dict, idx_slot: int) -> tuple[str, str, str]:
+    def _visit_and_extract(hit_obj: dict, idx_slot: int) -> tuple[str, str, str, str]:
         with pointer_lock():
             hypr_focus("firefox")
             time.sleep(0.12)
             ax, ay = calibrated_move(hit_obj["x"], hit_obj["y"], f"Mở bài viết #{idx_slot + 1}", args.agent)
             notify_hud(ax, ay, "click", f"Click bài #{idx_slot + 1}", True, args.agent)
             run(["ydotool", "click", BUTTON_CODES["left"]])
-        time.sleep(2.2)
+        time.sleep(2.1)
+        ttl_now = _firefox_title()
+        if "duckduckgo" in ttl_now.lower() or ttl_now == search_title:
+            return "", "", ttl_now, search_url
         with pointer_lock():
             hypr_focus("firefox")
             time.sleep(0.15)
@@ -1175,24 +1254,24 @@ def cmd_web_copy(args):
         raw_c = run(["wl-paste", "--no-newline"]).stdout
         ttl_now = _firefox_title()
         img_f = ""
-        if save_img_base:
-            with pointer_lock():
-                press_combo("ctrl+l")
-                time.sleep(0.08)
-                press_combo("ctrl+c")
-                time.sleep(0.1)
-                press_combo("escape")
-            page_url = run(["wl-paste", "--no-newline"]).stdout.strip()
-            if page_url.startswith("http"):
-                try:
-                    import urllib.request
-                    req = urllib.request.Request(page_url, headers={"User-Agent": "Mozilla/5.0"})
-                    html_txt = urllib.request.urlopen(req, timeout=4.5).read().decode("utf-8", errors="ignore")
-                    slot_p = save_img_base if idx_slot == 0 else save_img_base.with_name(f"{save_img_base.stem}_{idx_slot + 1}{save_img_base.suffix}")
-                    img_f = _extract_article_image_from_html(page_url, html_txt, slot_p, query)
-                except Exception:
-                    img_f = ""
-        return _clean_copied_article(raw_c), img_f, ttl_now
+        page_url = ""
+        with pointer_lock():
+            press_combo("ctrl+l")
+            time.sleep(0.08)
+            press_combo("ctrl+c")
+            time.sleep(0.1)
+            press_combo("escape")
+        page_url = run(["wl-paste", "--no-newline"]).stdout.strip()
+        if save_img_base and page_url.startswith("http") and "duckduckgo.com/?" not in page_url:
+            try:
+                import urllib.request
+                req = urllib.request.Request(page_url, headers={"User-Agent": "Mozilla/5.0"})
+                html_txt = urllib.request.urlopen(req, timeout=4.5).read().decode("utf-8", errors="ignore")
+                slot_p = save_img_base if idx_slot == 0 else save_img_base.with_name(f"{save_img_base.stem}_{idx_slot + 1}{save_img_base.suffix}")
+                img_f = _extract_article_image_from_html(page_url, html_txt, slot_p, query)
+            except Exception:
+                img_f = ""
+        return _clean_copied_article(raw_c), img_f, ttl_now, page_url
 
     collected_parts = []
     saved_imgs = []
@@ -1205,17 +1284,17 @@ def cmd_web_copy(args):
             unique_hits.append(h_cand)
 
     for idx_h, h_obj in enumerate(unique_hits[:4]):
-        if idx_h > 0:
+        if idx_h > 0 and _firefox_title() != search_title:
             with pointer_lock():
                 hypr_focus("firefox")
                 time.sleep(0.1)
                 press_combo("alt+Left")
             time.sleep(1.3)
-        part_txt, part_img, part_ttl = _visit_and_extract(h_obj, len(saved_imgs))
+        part_txt, part_img, part_ttl, part_url = _visit_and_extract(h_obj, len(saved_imgs))
         if part_img and part_img not in saved_imgs:
             saved_imgs.append(part_img)
-        if _is_privacy_or_stub(part_txt):
-            # Privacy wall or empty SPA stub -> reject & keep trying next article!
+        if _is_privacy_or_stub(part_txt, part_url, part_ttl):
+            # Privacy wall, SERP self-copy, or empty SPA stub -> reject & keep trying next article!
             continue
         if not first_title:
             first_title = part_ttl
@@ -1278,6 +1357,7 @@ def cmd_office_paste(args):
         return
 
     w, h, _ = get_monitor_info()
+    ensure_spacious_workspace(target_app=app_name, agent=args.agent)
     notify_hud(w // 2, h // 2, "launch", f"Mở {app_name}", False, args.agent)
     launch_cmd = list(cmd)
     # If real Word processor (LibreOffice/OnlyOffice) AND docx was built, open that .docx directly or open blank & Ctrl+V
@@ -1340,6 +1420,114 @@ def cmd_office_paste(args):
         "pasted": pasted,
         "docx": saved_docx,
     }, ensure_ascii=False))
+
+
+def _corked_streams() -> list[str]:
+    out = run(["pactl", "list", "sink-inputs"]).stdout
+    active = []
+    for blk in out.split("Sink Input #"):
+        low = blk.lower()
+        if "corked: no" in low:
+            m = re.search(r'application\.name\s*=\s*"([^"]+)"', blk)
+            active.append(m.group(1) if m else "audio")
+    return active
+
+
+def cmd_close_app(args):
+    """Gracefully close Hyprland window(s) matching app class/title substring."""
+    target = args.target.strip().lower()
+    aliases = {
+        "libreoffice": ["libreoffice", "soffice"],
+        "writer": ["libreoffice", "soffice"],
+        "word": ["libreoffice", "soffice"],
+        "vscode": ["code"],
+        "vs code": ["code"],
+        "calculator": ["kcalc"],
+        "files": ["dolphin", "thunar"],
+        "terminal": ["konsole", "kitty", "foot"],
+    }
+    needles = aliases.get(target, [target])
+    clients = json.loads(run(["hyprctl", "clients", "-j"]).stdout or "[]")
+    matched = []
+    for c in clients:
+        cls = str(c.get("class") or "").lower()
+        ttl = str(c.get("title") or "").lower()
+        if cls == "foot" and "agy" in ttl and target != "foot":
+            continue
+        if any(n in cls or n in ttl for n in needles):
+            matched.append(c)
+
+    if not matched:
+        print(json.dumps({"ok": True, "matched": 0, "closed": [], "remaining": []}, ensure_ascii=False))
+        return
+
+    closed = []
+    for c in matched:
+        cx = int(c["at"][0] + c["size"][0] / 2)
+        cy = int(c["at"][1] + c["size"][1] / 2)
+        notify_hud(cx, cy, "close", f"Đóng {c.get('class')}", False, args.agent)
+        run(["hyprctl", "dispatch", "closewindow", f"address:{c['address']}"])
+        closed.append(f"{c.get('class')}: {c.get('title', '')[:40]}")
+
+    time.sleep(1.3)
+    def _still_matching():
+        rem_c = json.loads(run(["hyprctl", "clients", "-j"]).stdout or "[]")
+        return [
+            c for c in rem_c
+            if any(n in str(c.get("class") or "").lower() or n in str(c.get("title") or "").lower() for n in needles)
+            and not (str(c.get("class") or "").lower() == "foot" and "agy" in str(c.get("title") or "").lower() and target != "foot")
+        ]
+
+    rem_objs = _still_matching()
+    if rem_objs and args.force:
+        import signal
+        if any(n in ("libreoffice", "soffice") for n in needles):
+            run(["flatpak", "kill", "org.libreoffice.LibreOffice"])
+        for c in rem_objs:
+            pid = int(c.get("pid") or 0)
+            if pid > 1 and pid not in (os.getpid(), os.getppid()):
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except OSError:
+                    pass
+        time.sleep(0.7)
+        rem_objs = _still_matching()
+    remaining = [f"{c.get('class')}: {c.get('title', '')[:40]}" for c in rem_objs]
+    print(json.dumps({"ok": len(remaining) == 0, "matched": len(matched), "closed": closed, "remaining": remaining}, ensure_ascii=False))
+
+
+def cmd_fetch_images(args):
+    """Download N verified topic artwork images via DDG i.js in one fast call."""
+    out_p = Path(args.out).expanduser()
+    imgs = _fetch_verified_ddg_images(args.query, out_p, count=max(1, min(8, int(args.count or 1))))
+    print(json.dumps({"ok": len(imgs) >= 1, "count": len(imgs), "images": imgs}, ensure_ascii=False))
+
+
+def cmd_stop_media(args):
+    """Stop active video/music playback across MPRIS players and Firefox YouTube tabs, verified via PipeWire."""
+    before = _corked_streams()
+    run(["playerctl", "-a", "pause"])
+    run(["playerctl", "-a", "stop"])
+    time.sleep(0.4)
+    if _corked_streams() or args.close_tab:
+        if find_client("firefox") and any("firefox" in s.lower() for s in (before or _corked_streams())):
+            with pointer_lock():
+                hypr_focus("firefox")
+                time.sleep(0.15)
+                if args.close_tab:
+                    notify_hud(960, 80, "close", "Đóng tab YouTube", False, args.agent)
+                    press_combo("ctrl+w")
+                else:
+                    notify_hud(960, 540, "pause", "Dừng video YouTube", False, args.agent)
+                    press_combo("k")
+            time.sleep(0.55)
+    after = _corked_streams()
+    if after and any("vlc" in s.lower() or "mpv" in s.lower() for s in after):
+        run(["pkill", "-x", "vlc"])
+        run(["pkill", "-x", "mpv"])
+        time.sleep(0.3)
+        after = _corked_streams()
+    print(json.dumps({"ok": len(after) == 0, "corked_before": before, "corked_after": after}, ensure_ascii=False))
 
 
 def cmd_ocr(args):
@@ -1472,6 +1660,31 @@ def main():
     ofp.add_argument("--images", default="", help="Comma-separated image paths to embed into .docx")
     add_agent_arg(ofp)
     ofp.set_defaults(func=cmd_office_paste)
+
+    cap = sub.add_parser("close-app", help="Gracefully close window(s) matching app class/title")
+    cap.add_argument("target", help="App class or title substring (e.g. kate, code, firefox, libreoffice, vlc, dolphin)")
+    cap.add_argument("--force", action="store_true", help="Fallback kill if window refuses graceful close")
+    add_agent_arg(cap)
+    cap.set_defaults(func=cmd_close_app)
+
+    smp = sub.add_parser("stop-media", help="Stop/pause active YouTube/VLC/audio playback and verify PipeWire silent")
+    smp.add_argument("--close-tab", action="store_true", help="Also close active Firefox YouTube tab via Ctrl+W")
+    add_agent_arg(smp)
+    smp.set_defaults(func=cmd_stop_media)
+
+    fip = sub.add_parser("fetch-images", help="Download N verified topic images via DDG i.js in one fast call")
+    fip.add_argument("query", help="Image search keywords")
+    fip.add_argument("--count", type=int, default=2, help="Number of images to download (1..8)")
+    fip.add_argument("--out", default="/tmp/ai_img.jpg", help="Base output path")
+    fip.set_defaults(func=cmd_fetch_images)
+
+    ewp = sub.add_parser("ensure-workspace", help="Switch to an empty workspace if current workspace lacks readable space")
+    ewp.add_argument("--app", default="", help="Optional target app name if already open on current workspace")
+    ewp.add_argument("--min-w", type=int, default=820)
+    ewp.add_argument("--min-h", type=int, default=480)
+    ewp.add_argument("--max-windows", type=int, default=1)
+    add_agent_arg(ewp)
+    ewp.set_defaults(func=cmd_ensure_workspace)
 
     op = sub.add_parser("ocr", help="Run tesseract OCR on current screen or region")
     op.add_argument("--region")

@@ -108,6 +108,10 @@ def main():
   - Search Web -> Click Article -> Scroll -> `Ctrl+A`/`Ctrl+C` (+ optional hero image): `caelestia-desktop web-copy "<query>" [--engine ddg|google] [--save-image /tmp/ai_article_img.jpg] --agent Browser`
   - Open Highest-Priority Compatible Office/Editor (`lowriter`/`libreoffice` > `onlyoffice` > `wps` > `abiword` > `kate`) -> `Ctrl+V` Paste -> Save `.docx` (supports Markdown tables + `--image`): `caelestia-desktop office-paste --docx ~/Documents/<file>.docx --title "<Title>" [--image /tmp/ai_article_img.jpg] --agent Editor`
   - YouTube Search + Play + Audio Check (`--min-y 185` skips search bar): `caelestia-desktop yt-play "<song/video query>" --agent Browser`
+  - Stop Video/Media & Close Tab (`Corked: no` cleared): `caelestia-desktop stop-media [--close-tab] --agent Browser`
+  - Workspace Readability Guard (MANDATORY before opening GUI apps): `caelestia-desktop ensure-workspace [--app <name>]` — checks Hyprland tiled window count & geometry; automatically switches to a clean empty workspace if current workspace lacks space (`>=2` tiled windows or `<820x480` room). Built automatically into `launch`, `web-copy`, `yt-play`, and `office-paste`.
+  - Launch / Close Desktop Apps (`kate`, `code`, `dolphin`, `vlc`, `okular`, `gwenview`, `kcalc`, `btop`): `caelestia-desktop launch <cmd>` / `caelestia-desktop close-app <target> [--force]`
+  - Fast Verified Topic Images (`--count 1..8`): `caelestia-desktop fetch-images "<query>" --count N --out /tmp/ai_img.jpg`
   - Headless `.docx` Generator (fallback only): `caelestia-desktop write-docx ~/Documents/<file>.docx --title "<Title>" --file /tmp/body.txt [--image /tmp/ai_article_img.jpg]`
 - **Fast Text Clicker (`~0.8s`, Zero Vision Wait):**
   - `caelestia-desktop click-text "<text>" [--window firefox|quickshell|libreoffice] [--min-y 185] [--wait 5] [--agent <Tag>]` -> accent-insensitive OCR + smooth glide + click in ONE command!
