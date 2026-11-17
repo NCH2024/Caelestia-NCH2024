@@ -428,8 +428,51 @@ def cmd_focus(args):
         sys.exit(1)
 
 
-def ensure_spacious_workspace(target_app: str = "", min_w: int = 820, min_h: int = 480, max_windows: int = 1, agent: str = "Meow AI") -> dict:
-    """Check active Hyprland workspace free space/readability; switch to a clean empty workspace if crowded."""
+def _ancestor_pids() -> set[int]:
+    """Return PIDs of current process and its ancestors so we never crowd the main CLI terminal workspace."""
+    anc = set()
+    pid = os.getpid()
+    for _ in range(16):
+        if pid <= 1 or pid in anc:
+            break
+        anc.add(pid)
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+            rp = stat.rfind(")")
+            ppid = int(stat[rp + 2 :].split()[1])
+            pid = ppid
+        except Exception:
+            break
+    return anc
+
+
+def _ws_pending_count(ws_id: int) -> int:
+    p = Path("/tmp/caelestia_ws_pending.json")
+    try:
+        data = json.loads(p.read_text()) if p.exists() else {}
+        now = time.time()
+        return sum(1 for ts in (data.get(str(ws_id)) or []) if now - float(ts) < 5.0)
+    except Exception:
+        return 0
+
+
+def _ws_add_pending(ws_id: int):
+    p = Path("/tmp/caelestia_ws_pending.json")
+    try:
+        data = json.loads(p.read_text()) if p.exists() else {}
+    except Exception:
+        data = {}
+    now = time.time()
+    clean = {k: [ts for ts in v if now - float(ts) < 5.0] for k, v in data.items() if isinstance(v, list)}
+    clean.setdefault(str(ws_id), []).append(now)
+    try:
+        p.write_text(json.dumps(clean))
+    except Exception:
+        pass
+
+
+def ensure_spacious_workspace(target_app: str = "", min_w: int = 820, min_h: int = 480, max_windows: int = 2, agent: str = "Meow AI") -> dict:
+    """Enforce Hyprland layout rule: main CLI terminal stays 1 window alone; other workspaces max 2 tiled windows & >=820x480."""
     try:
         aw = json.loads(run(["hyprctl", "activeworkspace", "-j"]).stdout or "{}")
         cur_ws = int(aw.get("id") or 1)
@@ -439,6 +482,7 @@ def ensure_spacious_workspace(target_app: str = "", min_w: int = 820, min_h: int
     except Exception:
         return {"ok": True, "workspace": 1, "switched": False, "reason": "hyprctl_unavailable"}
 
+    anc = _ancestor_pids()
     tiled = [
         c for c in clients
         if int((c.get("workspace") or {}).get("id") or -1) == cur_ws
@@ -449,34 +493,46 @@ def ensure_spacious_workspace(target_app: str = "", min_w: int = 820, min_h: int
         and (c.get("size") or [0, 0])[1] >= 150
     ]
 
+    has_main_terminal = any(
+        int(c.get("pid") or 0) in anc
+        or (str(c.get("class") or "").lower() in ("foot", "kitty", "alacritty", "konsole") and "agy" in str(c.get("title") or "").lower())
+        for c in tiled
+    )
+
     need_t = (target_app or "").lower().strip()
-    if need_t:
+    if need_t == "firefox" and not has_main_terminal:
         same_win = [
             c for c in tiled
             if need_t in str(c.get("class") or "").lower() or need_t in str(c.get("title") or "").lower()
         ]
-        if same_win and not has_fs:
+        if same_win and not has_fs and len(tiled) <= max_windows:
             sz = same_win[0].get("size") or [0, 0]
             if sz[0] >= min_w and sz[1] >= min_h:
                 return {"ok": True, "workspace": cur_ws, "switched": False, "reason": "target_already_spacious", "windows": len(tiled)}
 
+    pending = _ws_pending_count(cur_ws)
+    effective_count = max(len(tiled), pending)
     too_small = any(
         (c.get("size") or [0, 0])[0] < min_w or (c.get("size") or [0, 0])[1] < min_h
         for c in tiled
     )
     half_risk = (len(tiled) == 1) and ((tiled[0].get("size") or [0, 0])[0] < 1150 or (tiled[0].get("size") or [0, 0])[1] < 650)
-    crowded = has_fs or (len(tiled) > max_windows) or too_small or half_risk
+    # Main terminal workspace stays strictly 1 window; regular workspaces cap at max_windows (default 2)
+    crowded = has_main_terminal or has_fs or (effective_count >= max_windows) or too_small or half_risk
     if not crowded:
         return {"ok": True, "workspace": cur_ws, "switched": False, "reason": "workspace_spacious", "windows": len(tiled)}
 
     used_ids = {int(w.get("id") or 0) for w in workspaces if int(w.get("windows") or 0) > 0}
     used_ids.add(cur_ws)
+    for k in range(1, 21):
+        if _ws_pending_count(k) > 0:
+            used_ids.add(k)
     new_ws = next((wid for wid in range(1, 21) if wid not in used_ids), cur_ws + 1)
     run(["hyprctl", "dispatch", "workspace", str(new_ws)])
     time.sleep(0.25)
     mw, mh, _ = get_monitor_info()
     notify_hud(mw // 2, 90, "desktop_windows", f"Workspace #{new_ws} (đủ rộng)", False, agent)
-    return {"ok": True, "workspace": new_ws, "prev_workspace": cur_ws, "switched": True, "reason": f"crowded({len(tiled)}_wins)", "windows": 0}
+    return {"ok": True, "workspace": new_ws, "prev_workspace": cur_ws, "switched": True, "reason": "main_terminal_1win" if has_main_terminal else f"crowded({effective_count}_wins)", "windows": 0}
 
 
 def cmd_ensure_workspace(args):
@@ -497,7 +553,14 @@ def cmd_launch(args):
         keep_ws = True
         cmd = [c for c in cmd if c != "--keep-workspace"]
     app_name = Path(cmd[0]).name if cmd else "app"
+    if any("libreoffice" in str(x).lower() or "lowriter" in str(x).lower() for x in cmd):
+        for flag in ("--nologo", "--norestore"):
+            if flag not in cmd:
+                cmd.append(flag)
     ws_info = {} if keep_ws else ensure_spacious_workspace(target_app=app_name, agent=args.agent)
+    target_ws = int(ws_info.get("workspace") or json.loads(run(["hyprctl", "activeworkspace", "-j"]).stdout or "{}").get("id") or 1)
+    _ws_add_pending(target_ws)
+    before_addrs = {c.get("address") for c in json.loads(run(["hyprctl", "clients", "-j"]).stdout or "[]")}
     w, h, _ = get_monitor_info()
     notify_hud(w // 2, h // 2, "launch", f"Mở {app_name}", False, args.agent)
     subprocess.Popen(
@@ -506,6 +569,13 @@ def cmd_launch(args):
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+    # Wait briefly (up to 2.5s) for the new window to map in Hyprland so sequential launches see accurate counts
+    deadline = time.time() + 2.5
+    while time.time() < deadline:
+        cur_clients = json.loads(run(["hyprctl", "clients", "-j"]).stdout or "[]")
+        if any(c.get("address") not in before_addrs and c.get("mapped", True) for c in cur_clients):
+            break
+        time.sleep(0.15)
     print(json.dumps({"ok": True, "launched": cmd, "workspace": ws_info}, ensure_ascii=False))
 
 
@@ -1682,7 +1752,7 @@ def main():
     ewp.add_argument("--app", default="", help="Optional target app name if already open on current workspace")
     ewp.add_argument("--min-w", type=int, default=820)
     ewp.add_argument("--min-h", type=int, default=480)
-    ewp.add_argument("--max-windows", type=int, default=1)
+    ewp.add_argument("--max-windows", type=int, default=2)
     add_agent_arg(ewp)
     ewp.set_defaults(func=cmd_ensure_workspace)
 

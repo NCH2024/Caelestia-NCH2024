@@ -53,7 +53,7 @@
     {
       "id": "workspace_readability_guard",
       "topic": "Hyprland workspace free-space guard before app launch",
-      "lesson": "Always check workspace capacity via `caelestia-desktop ensure-workspace` or `caelestia-desktop launch <cmd>`; auto-switch to a new workspace if `>=2` tiled windows or `<820x480` room."
+      "lesson": "Keep the main terminal workspace at 1 window alone and max 2 tiled windows per workspace (`>=820x480`); always launch GUI apps via `caelestia-desktop launch <cmd>`."
     },
     {
       "id": "batch_telemetry_fast",

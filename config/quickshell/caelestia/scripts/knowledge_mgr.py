@@ -177,7 +177,7 @@ def record_run(user_task: str, elapsed_sec: float, ok: bool, summary: str, trace
             upsert_recipe(
                 data,
                 "Hyprland workspace free-space guard before app launch",
-                "Always check workspace capacity via `caelestia-desktop ensure-workspace` or `caelestia-desktop launch <cmd>`; auto-switch to a new workspace if `>=2` tiled windows or `<820x480` room.",
+                "Keep the main terminal workspace at 1 window alone and max 2 tiled windows per workspace (`>=820x480`); always launch GUI apps via `caelestia-desktop launch <cmd>`.",
                 "workspace_readability_guard",
             )
     else:

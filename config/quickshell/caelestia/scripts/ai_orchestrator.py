@@ -728,7 +728,7 @@ class Orchestrator:
                 "  * Browse/read/scroll/copy web article visually: `caelestia-desktop web-copy \"<topic query>\" --agent Browser`\n"
                 "  * Open compatible OS Office/Editor (`lowriter`/`libreoffice` > `onlyoffice` > `wps` > `abiword` > `kate`) & visually paste (`Ctrl+V`) + save `.docx`: `caelestia-desktop office-paste --docx ~/Documents/<Name>.docx --title \"<Title>\" --agent Editor`\n"
                 "  * YouTube visual search & verified playback: `caelestia-desktop yt-play \"<song/video query>\" [--fullscreen] [--screenshot /tmp/ai_yt_shot.jpg] --agent Browser`\n"
-                "  * Launch/focus/close installed desktop apps (`kate`, `code`, `dolphin`, `vlc`, `gwenview`, `okular`, `kcalc`, `btop`, `foot`): ALWAYS use `caelestia-desktop launch <cmd>` (or run `caelestia-desktop ensure-workspace` before `firefox` / GUI commands) so Hyprland switches to a fresh empty workspace whenever the current workspace has >=2 tiled windows or <820x480 readable room; close cleanly with `caelestia-desktop close-app <target> [--force]`\n"
+                "  * Launch/focus/close installed desktop apps (`kate`, `code`, `dolphin`, `vlc`, `gwenview`, `okular`, `kcalc`, `btop`, `foot`): ALWAYS launch each GUI app via `caelestia-desktop launch <cmd>` (or call `caelestia-desktop ensure-workspace` before `firefox`/GUI commands) so the main CLI terminal workspace stays at strictly 1 window alone and every other Hyprland workspace holds AT MOST 2 tiled windows (`>=820x480`), auto-switching to fresh workspaces; close cleanly with `caelestia-desktop close-app <target> [--force]`\n"
                 "  * Stop/pause playing video/music & verify silent PipeWire: `caelestia-desktop stop-media [--close-tab] --agent Browser`\n"
                 "  * Download N verified topic images in 1 call (~2s): `caelestia-desktop fetch-images \"<query>\" --count N --out /tmp/ai_img.jpg`\n"
                 "- CHAINED MULTI-HOP TASKS (Find A -> get name B -> search B -> write files/open apps): Use `search_web` directly for fast accurate chained facts, then build `.docx` (`write-docx --images ...`) / launch target apps cleanly and verify `hyprctl clients -j`.\n"
@@ -1729,7 +1729,7 @@ class Orchestrator:
                     self._record_and_reflect_async(user_task, task_start_ts, True, "curated_web_word", curated_ans)
                     return
 
-            if self.allow_desktop and self.prefer_visual_cursor and has_browser and has_control:
+            if self.allow_desktop and self.prefer_visual_cursor and has_browser and has_control and not has_extra_apps_or_chain:
                 has_seq_order = bool(re.search(r"\b(sau đó|rồi|tiếp theo|cuối cùng|sau cùng|then|after that)\b", low))
                 ctl_parallel = not has_seq_order
                 self.logger.write(
